@@ -7,19 +7,14 @@ on:
 jobs:
   cleanup:
     name: Delete Preview
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, kind]
     permissions:
       contents: read
       deployments: write
 
     steps:
       - name: Delete Cellenza
-        env:
-          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "$KUBECONFIG_DATA" | base64 -d > /tmp/kubeconfig
-          export KUBECONFIG=/tmp/kubeconfig
-
           kubectl delete cellenza pr-${{ github.event.pull_request.number }} \
             --ignore-not-found
 
