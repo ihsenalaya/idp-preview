@@ -459,3 +459,4 @@ The operator injects the following environment variables automatically:
 | OpenTelemetry Operator | `opentelemetry-operator-system` | `open-telemetry/opentelemetry-operator` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | `jaegertracing/jaeger` | 4.7.0 |
 | GitHub Runner | `github-runner` | — (manifest) | `myoung34/github-runner:latest` |
+# test
