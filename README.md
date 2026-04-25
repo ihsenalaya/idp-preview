@@ -19,8 +19,8 @@ GitHub Actions (self-hosted runner inside the cluster)
        │                                      │
        │                     ┌────────────────┼──────────────────┐
        │                Namespace         PostgreSQL           OTel annotation
-       │                Deployment         (sidecar)         (auto-instrumentation)
-       │                Service                                    │
+       │                Deployment      (own Deployment)     (auto-instrumentation)
+       │                Service         Secret + Service          │
        │                Ingress  ──► pr-<N>.preview.localtest.me   │
        │                                                           ▼
        │                                                    Jaeger (traces)
