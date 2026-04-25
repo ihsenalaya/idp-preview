@@ -149,7 +149,7 @@ kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/j
 kubectl -n observability rollout status deployment/jaeger --timeout=120s
 
 # OTel Collector + Python Instrumentation CR
-kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/main/demo-app/otel.yaml
+kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/otel.yaml
 
 kubectl -n observability rollout status deployment/otel-collector --timeout=120s
 ```
