@@ -124,6 +124,9 @@ jobs:
             image: ${IMAGE}
             resourceTier: medium
             ttl: 48h
+            database:
+              enabled: true
+              databaseName: appdb
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
