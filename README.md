@@ -1,7 +1,7 @@
 # idp-testing
 
 Demo application for validating the Cellenza preview environment workflow.  
-Each pull request gets an isolated Kubernetes environment with its own PostgreSQL database, a public URL, and an automatic GitHub Deployment status.
+Each pull request gets an isolated Kubernetes environment with its own PostgreSQL database, a public URL, and automatic GitHub Deployment status. Traces are collected by OpenTelemetry and visible in Jaeger.
 
 ---
 
@@ -17,12 +17,13 @@ GitHub Actions (self-hosted runner inside the cluster)
        │
        ├─ kubectl apply Cellenza CR  ──► Cellenza Operator
        │                                      │
-       │                               ┌──────┴──────────────┐
-       │                          Namespace              PostgreSQL
-       │                          Deployment              (sidecar)
-       │                          Service
-       │                          Ingress  ──► pr-<N>.preview.localtest.me
-       │
+       │                     ┌────────────────┼──────────────────┐
+       │                Namespace         PostgreSQL           OTel annotation
+       │                Deployment         (sidecar)         (auto-instrumentation)
+       │                Service                                    │
+       │                Ingress  ──► pr-<N>.preview.localtest.me   │
+       │                                                           ▼
+       │                                                    Jaeger (traces)
        └─ Operator posts GitHub Deployment status + PR comment
 ```
 
@@ -60,7 +61,7 @@ kubectl get nodes
 
 ## Step 2 — Install cert-manager
 
-The Cellenza Operator uses cert-manager to provision the admission webhook certificate.
+Required by the Cellenza Operator webhook and the OpenTelemetry Operator.
 
 ```bash
 helm repo add cert-manager https://charts.jetstack.io
@@ -137,85 +138,20 @@ kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry
 
 ---
 
-## Step 6 — Install Jaeger (all-in-one, in-memory)
+## Step 6 — Deploy Jaeger and configure the OTel Collector
+
+A single command deploys Jaeger (all-in-one, in-memory) and configures the OpenTelemetry Collector + Python auto-instrumentation:
 
 ```bash
-helm repo add jaegertracing https://jaegertracing.github.io/helm-charts
-helm repo update
-
-helm install jaeger jaegertracing/jaeger \
-  --namespace observability \
-  --create-namespace \
-  --version 4.7.0 \
-  --set allInOne.enabled=true \
-  --set agent.enabled=false \
-  --set collector.enabled=false \
-  --set query.enabled=false \
-  --set provisionDataStore.cassandra=false \
-  --set provisionDataStore.elasticsearch=false \
-  --set storage.type=memory \
-  --set "allInOne.extraEnv[0].name=COLLECTOR_OTLP_ENABLED" \
-  --set "allInOne.extraEnv[0].value=true"
+# Jaeger all-in-one
+kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/jaeger.yaml
 
 kubectl -n observability rollout status deployment/jaeger --timeout=120s
-```
 
----
+# OTel Collector + Python Instrumentation CR
+kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/main/demo-app/otel.yaml
 
-## Step 7 — Configure the OpenTelemetry Collector and Python Instrumentation
-
-```bash
-kubectl apply -f - <<'EOF'
----
-apiVersion: opentelemetry.io/v1beta1
-kind: OpenTelemetryCollector
-metadata:
-  name: otel
-  namespace: observability
-spec:
-  mode: deployment
-  config:
-    receivers:
-      otlp:
-        protocols:
-          grpc:
-            endpoint: 0.0.0.0:4317
-          http:
-            endpoint: 0.0.0.0:4318
-    processors:
-      batch:
-        timeout: 1s
-    exporters:
-      otlp/jaeger:
-        endpoint: jaeger.observability.svc.cluster.local:4317
-        tls:
-          insecure: true
-    service:
-      pipelines:
-        traces:
-          receivers: [otlp]
-          processors: [batch]
-          exporters: [otlp/jaeger]
----
-apiVersion: opentelemetry.io/v1alpha1
-kind: Instrumentation
-metadata:
-  name: python
-  namespace: observability
-spec:
-  exporter:
-    endpoint: http://otel-collector.observability.svc.cluster.local:4318
-  propagators:
-    - tracecontext
-    - baggage
-  sampler:
-    type: parentbased_traceidratio
-    argument: "1"
-  python:
-    env:
-      - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
-        value: "true"
-EOF
+kubectl -n observability rollout status deployment/otel-collector --timeout=120s
 ```
 
 Verify:
@@ -225,14 +161,24 @@ kubectl get otelcol -n observability
 kubectl get instrumentation -n observability
 ```
 
+Expected output:
+
+```
+NAME   MODE         VERSION   READY
+otel   deployment   0.148.0   1/1
+
+NAME     ENDPOINT                                                        SAMPLER
+python   http://otel-collector.observability.svc.cluster.local:4318      parentbased_traceidratio
+```
+
 ---
 
-## Step 8 — Deploy the self-hosted GitHub Actions runner
+## Step 7 — Deploy the self-hosted GitHub Actions runner
 
 The runner runs inside the cluster so it has direct access to the Kubernetes API.  
 Its service account has `cluster-admin` rights to create Jobs, Secrets, and Cellenza resources.
 
-### 8.1 Generate a runner registration token
+### 7.1 Generate a runner registration token
 
 > Tokens expire after **1 hour**. If the runner pod restarts, repeat this step.
 
@@ -240,7 +186,7 @@ Its service account has `cluster-admin` rights to create Jobs, Secrets, and Cell
 gh api -X POST repos/<YOUR_OWNER>/<YOUR_REPO>/actions/runners/registration-token --jq '.token'
 ```
 
-### 8.2 Create `runner.yaml`
+### 7.2 Create `runner.yaml`
 
 Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, and `<TOKEN>` with the values from the previous step.
 
@@ -318,7 +264,7 @@ spec:
             path: /var/run/docker.sock
 ```
 
-### 8.3 Apply and verify
+### 7.3 Apply and verify
 
 ```bash
 kubectl apply -f runner.yaml
@@ -336,7 +282,7 @@ gh api repos/<YOUR_OWNER>/<YOUR_REPO>/actions/runners \
 
 ---
 
-## Step 9 — Fork or configure this repository
+## Step 8 — Fork or configure this repository
 
 The GitHub Actions workflows are already in `.github/workflows/`:
 
@@ -349,14 +295,14 @@ The workflows use only `secrets.GITHUB_TOKEN` — no additional secrets are need
 
 ---
 
-## Step 10 — Open a pull request
+## Step 9 — Open a pull request
 
-Create a branch with any change:
+Create a branch with any change in the application code (not in `.github/workflows/`):
 
 ```bash
 git checkout -b my-feature
-echo "# test" >> README.md
-git add README.md
+echo "# test" >> app.py
+git add app.py
 git commit -m "test: trigger preview"
 git push origin my-feature
 gh pr create --title "test: trigger preview" --body "Testing the preview flow"
@@ -364,9 +310,8 @@ gh pr create --title "test: trigger preview" --body "Testing the preview flow"
 
 The `Preview Environment` workflow starts automatically on the self-hosted runner.
 
-> **Important:** If your branch modifies files in `.github/workflows/`, GitHub will not trigger the
-> workflow on self-hosted runners for security reasons. Always make your first PR with only
-> application code changes.
+> **Important:** Do not modify `.github/workflows/` files in your PR branch — GitHub will not
+> trigger the workflow on self-hosted runners when the workflow files themselves are changed.
 
 ---
 
@@ -395,7 +340,7 @@ http://pr-<NUMBER>.preview.localtest.me:8080
 kubectl port-forward -n observability svc/jaeger 16686:16686
 ```
 
-Open [http://localhost:16686](http://localhost:16686). Select service `idp-testing` to see traces from the Flask app.
+Open [http://localhost:16686](http://localhost:16686). Select service **`idp-testing`** to see traces from the Flask app.
 
 ---
 
@@ -410,6 +355,23 @@ NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-tok
 kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
 kubectl rollout restart deployment/github-runner -n github-runner
 kubectl logs -n github-runner deployment/github-runner --tail=5
+```
+
+### No traces in Jaeger
+
+Verify the OTel annotation was injected on the preview pod:
+
+```bash
+kubectl get pod -n preview-pr-<NUMBER> -l app=pr-<NUMBER> \
+  -o jsonpath='{.items[0].metadata.annotations}' | grep instrumentation
+```
+
+Expected: `instrumentation.opentelemetry.io/inject-python: observability/python`
+
+If missing, check that `spec.telemetry.enabled: true` is in the Cellenza resource:
+
+```bash
+kubectl get cellenza pr-<NUMBER> -o yaml | grep -A8 telemetry
 ```
 
 ### Cellenza stuck in Pending
@@ -451,14 +413,12 @@ The operator injects the following environment variables automatically:
 
 ## Summary of installed components
 
-| Component | Namespace | Helm chart | Version |
-|-----------|-----------|------------|---------|
-| cert-manager | `cert-manager` | `cert-manager/cert-manager` | v1.20.2 |
-| ingress-nginx | `ingress-nginx` | `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | `oci://ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.6.2 |
-| OpenTelemetry Operator | `opentelemetry-operator-system` | `open-telemetry/opentelemetry-operator` | 0.110.0 |
-| Jaeger (all-in-one) | `observability` | `jaegertracing/jaeger` | 4.7.0 |
-| GitHub Runner | `github-runner` | — (manifest) | `myoung34/github-runner:latest` |
-# test
-# test1
-# jaeger test
+| Component | Namespace | Install | Version |
+|-----------|-----------|---------|---------|
+| cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
+| ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
+| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.6.2 |
+| OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
+| Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
+| OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
+| GitHub Runner | `github-runner` | `kubectl apply -f runner.yaml` | `myoung34/github-runner:latest` |
