@@ -127,6 +127,12 @@ jobs:
             database:
               enabled: true
               databaseName: appdb
+            telemetry:
+              enabled: true
+              serviceName: idp-testing
+              autoInstrumentation:
+                language: python
+                instrumentationRef: observability/python
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
