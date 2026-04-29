@@ -235,7 +235,7 @@ The chart is published via OCI to GHCR. No `helm repo add` needed.
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.7.2 \
+  --version 0.7.3 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -543,7 +543,7 @@ The operator injects the following environment variables automatically:
 
 ### Database migration and seed jobs
 
-Cellenza Operator `0.7.2` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
+Cellenza Operator `0.7.3` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
 
 The current demo app initializes its simple `messages` table at runtime in `app.py`, so the default workflow keeps migration and seed disabled. To move that setup into proper preview jobs, add scripts to the application image, then enable the fields in `.github/workflows/preview.yaml`.
 
@@ -627,7 +627,7 @@ kubectl describe cellenza pr-<NUMBER>
 |-----------|-----------|---------|---------|
 | cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.2 |
+| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.3 |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
 | OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
