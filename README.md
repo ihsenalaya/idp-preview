@@ -46,7 +46,8 @@ The operator maps its internal phase to a GitHub Deployment state:
 
 | Operator phase | GitHub state | Triggered when |
 |---|---|---|
-| `Pending` / `Provisioning` | `pending` | CR created, resources being provisioned |
+| `Pending` | `queued` | Waiting for approval (`requiresApproval=true`) |
+| `Provisioning` | `in_progress` | CR created, resources being provisioned |
 | `Running` | `success` + `environment_url` | All resources ready, Ingress reachable |
 | `Failed` | `failure` | Any reconciliation error |
 | `Terminating` | `inactive` | PR closed, finalizer running |
@@ -56,17 +57,13 @@ The operator maps its internal phase to a GitHub Deployment state:
 POST /repos/{owner}/{repo}/issues/{prNumber}/comments
 ```
 
-Posted **once** when the phase reaches `Running` and `spec.github.commentOnReady: true`. Example:
+The operator posts **three comments** across the PR lifecycle:
 
-```
-## Preview Environment Ready
-
-**URL:** http://pr-42.preview.localtest.me:8080
-
-Environment: `pr-42`
-
-Managed by Cellenza Operator
-```
+| Phase | Comment |
+|---|---|
+| `Provisioning` | `🔄 Provisioning — création du namespace, PostgreSQL et des ressources Kubernetes en cours...` |
+| `Running` | `## Preview Environment Ready` + URL |
+| PR closed | `Preview environment **pr-42** supprimé.` (posted by `cleanup.yaml`) |
 
 ### Full flow
 
@@ -83,7 +80,8 @@ GitHub Actions (preview.yaml)
   │
   └─ Cellenza Operator (reconcile loop)
        │
-       ├─ Provisioning  →  POST statuses { state: "pending" }
+       ├─ Provisioning  →  POST statuses { state: "in_progress" }
+       │                   POST issues/42/comments { body: "🔄 Provisioning..." }
        │
        ├─ Resources ready
        │       ├─  POST statuses { state: "success", environment_url: "http://pr-42..." }
@@ -91,6 +89,10 @@ GitHub Actions (preview.yaml)
        │
        └─ PR closed → kubectl delete Cellenza
                └─ Finalizer  →  POST statuses { state: "inactive" }
+
+GitHub Actions (cleanup.yaml)
+  └─ PR closed → kubectl delete Cellenza → wait for deletion
+               └─ POST issues/42/comments { body: "Preview environment pr-42 supprimé." }
 ```
 
 ### Spec fields
@@ -213,7 +215,7 @@ The chart is published via OCI to GHCR. No `helm repo add` needed.
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.6.2 \
+  --version 0.7.0 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -527,7 +529,7 @@ The operator injects the following environment variables automatically:
 |-----------|-----------|---------|---------|
 | cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.6.2 |
+| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.0 |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
 | OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
