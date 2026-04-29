@@ -31,6 +31,116 @@ PR closed → cleanup workflow deletes the Cellenza CR → operator finalizer te
 
 ---
 
+## GitHub Integration
+
+The Cellenza Operator integrates natively with GitHub via two REST API calls made directly from its reconciliation loop — no external CI step or webhook is needed once the CR is applied.
+
+### API calls
+
+#### 1. Deployment Status
+```
+POST /repos/{owner}/{repo}/deployments/{deploymentId}/statuses
+```
+
+The operator maps its internal phase to a GitHub Deployment state:
+
+| Operator phase | GitHub state | Triggered when |
+|---|---|---|
+| `Pending` / `Provisioning` | `pending` | CR created, resources being provisioned |
+| `Running` | `success` + `environment_url` | All resources ready, Ingress reachable |
+| `Failed` | `failure` | Any reconciliation error |
+| `Terminating` | `inactive` | PR closed, finalizer running |
+
+#### 2. PR Comment
+```
+POST /repos/{owner}/{repo}/issues/{prNumber}/comments
+```
+
+Posted **once** when the phase reaches `Running` and `spec.github.commentOnReady: true`. Example:
+
+```
+## Preview Environment Ready
+
+**URL:** http://pr-42.preview.localtest.me:8080
+
+Environment: `pr-42`
+
+Managed by Cellenza Operator
+```
+
+### Full flow
+
+```
+GitHub Actions (preview.yaml)
+  │
+  ├─ 1. Kaniko build + push image to GHCR
+  │
+  ├─ 2. github.rest.repos.createDeployment()
+  │       └─ returns deploymentId
+  │
+  ├─ 3. kubectl apply Cellenza CR
+  │       └─ spec.github.deploymentId: <id from step 2>
+  │
+  └─ Cellenza Operator (reconcile loop)
+       │
+       ├─ Provisioning  →  POST statuses { state: "pending" }
+       │
+       ├─ Resources ready
+       │       ├─  POST statuses { state: "success", environment_url: "http://pr-42..." }
+       │       └─  POST issues/42/comments { body: "## Preview Environment Ready..." }
+       │
+       └─ PR closed → kubectl delete Cellenza
+               └─ Finalizer  →  POST statuses { state: "inactive" }
+```
+
+### Spec fields
+
+```yaml
+spec:
+  github:
+    enabled: true
+    owner: <github-org-or-user>
+    repo: <repository-name>
+    deploymentId: 123456789        # created by the workflow before kubectl apply
+    environment: pr-42             # label shown in GitHub Environments tab
+    commentOnReady: true           # post PR comment when Running
+    tokenSecretRef:
+      name: github-token-pr-42     # Secret in cellenza-operator-system
+      namespace: cellenza-operator-system
+      key: token
+```
+
+The GitHub token Secret is created by the workflow using `secrets.GITHUB_TOKEN` — no manual secret management needed.
+
+### Status fields
+
+After each notification the operator writes the result to `.status.github`:
+
+```yaml
+status:
+  github:
+    deploymentState: success
+    lastNotifiedPhase: Running
+    lastEnvironmentUrl: http://pr-42.preview.localtest.me:8080
+    commentId: 987654321           # 0 if commentOnReady is false
+    lastError: ""                  # populated on API failure, non-blocking
+    lastNotifiedAt: "2026-04-29T10:30:00Z"
+```
+
+The operator is **idempotent**: before any API call it checks that `deploymentState`, `lastEnvironmentUrl`, `lastNotifiedPhase`, and `commentId` have not already been written for the current state. Duplicate calls are skipped even if the reconciliation loop runs multiple times.
+
+### Inspect GitHub status
+
+```bash
+# Current GitHub integration state
+kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github}' | jq .
+
+# Check for non-blocking GitHub errors
+kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github.lastError}'
+```
+
+---
+
 ## Prerequisites
 
 | Tool | Version | Install |
