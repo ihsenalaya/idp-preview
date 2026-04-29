@@ -215,7 +215,7 @@ The chart is published via OCI to GHCR. No `helm repo add` needed.
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.7.0 \
+  --version 0.7.1 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -521,6 +521,26 @@ The operator injects the following environment variables automatically:
 | `PREVIEW_BRANCH` | `spec.branch` |
 | `PREVIEW_PR` | `spec.prNumber` |
 
+### Database migration and seed jobs
+
+Cellenza Operator `0.7.1` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
+
+Example manifest fragment:
+
+```yaml
+database:
+  enabled: true
+  databaseName: appdb
+  migration:
+    enabled: true
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+  seed:
+    enabled: true
+    command: ["python", "seed.py"]
+```
+
+The current demo app initializes its simple table at runtime, so the default workflow keeps migration and seed disabled. If the app later adopts Alembic or a seed script, add those fields under `spec.database` in `.github/workflows/preview.yaml`.
+
 ---
 
 ## Summary of installed components
@@ -529,7 +549,7 @@ The operator injects the following environment variables automatically:
 |-----------|-----------|---------|---------|
 | cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.0 |
+| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.1 |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
 | OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
