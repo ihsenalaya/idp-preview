@@ -54,6 +54,7 @@ jobs:
       - name: Comment PR — environment deleted
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
             --body "Preview environment **pr-${{ github.event.pull_request.number }}** supprimé."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
