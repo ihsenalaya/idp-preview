@@ -61,9 +61,29 @@ The operator posts **three comments** across the PR lifecycle:
 
 | Phase | Comment |
 |---|---|
-| `Provisioning` | `🔄 Provisioning — création du namespace, PostgreSQL et des ressources Kubernetes en cours...` |
-| `Running` | `## Preview Environment Ready` + URL |
+| `Provisioning` | `Cellenza Preview Provisioning` with the target environment |
+| `Running` | `Cellenza Preview Ready` with URL, namespace, expiry, app/database/migration/seed/telemetry evidence |
+| `Failed` | `Cellenza Preview Failed` with diagnosis, failing component, recent warning events, and useful `kubectl` commands |
 | PR closed | `Preview environment **pr-42** supprimé.` (posted by `cleanup.yaml`) |
+
+Example failure comment:
+
+```text
+Cellenza Preview Failed
+
+Environment: pr-42
+Namespace: preview-pr-42
+
+Diagnosis:
+- Reason: DatabaseMigrationFailed
+- Component: migration
+- Message: Job postgres-migrate failed: BackoffLimitExceeded
+
+Debug Commands:
+kubectl describe cellenza pr-42
+kubectl get pods -n preview-pr-42
+kubectl logs -n preview-pr-42 job/postgres-migrate
+```
 
 ### Full flow
 
@@ -215,7 +235,7 @@ The chart is published via OCI to GHCR. No `helm repo add` needed.
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.7.1 \
+  --version 0.7.2 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -523,7 +543,7 @@ The operator injects the following environment variables automatically:
 
 ### Database migration and seed jobs
 
-Cellenza Operator `0.7.1` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
+Cellenza Operator `0.7.2` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
 
 The current demo app initializes its simple `messages` table at runtime in `app.py`, so the default workflow keeps migration and seed disabled. To move that setup into proper preview jobs, add scripts to the application image, then enable the fields in `.github/workflows/preview.yaml`.
 
@@ -607,7 +627,7 @@ kubectl describe cellenza pr-<NUMBER>
 |-----------|-----------|---------|---------|
 | cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.1 |
+| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.2 |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
 | OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
