@@ -11,154 +11,28 @@ Each pull request gets an isolated Kubernetes environment with its own PostgreSQ
 PR opened / updated
        │
        ▼
-GitHub Actions (self-hosted runner inside the cluster)
+GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
        │
-       ├─ Kaniko  ──► builds image in-cluster ──► pushes to GHCR
-       │
-       ├─ kubectl apply Cellenza CR  ──► Cellenza Operator
-       │                                      │
-       │                     ┌────────────────┼──────────────────┐
-       │                Namespace         PostgreSQL           OTel annotation
-       │                Deployment      (own Deployment)     (auto-instrumentation)
-       │                Service         Secret + Service          │
-       │                Ingress  ──► pr-<N>.preview.localtest.me   │
-       │                                                           ▼
-       │                                                    Jaeger (traces)
-       └─ Operator posts GitHub Deployment status + PR comment
-```
+       ├─ Kaniko ──► builds image ──► pushes to GHCR
+       ├─ github.rest.repos.createDeployment() ──► returns deploymentId
+       ├─ kubectl create secret (GITHUB_TOKEN)
+       └─ kubectl apply Cellenza CR ──► spec.github.deploymentId = <id>
+                              │
+                              ▼
+                    Cellenza Operator (reconcile loop)
+                              │
+              ┌───────────────┼─────────────────────────┐
+         Namespace        PostgreSQL               OTel injection
+         Deployment     Migration Job           (auto-instrumentation)
+         Service           Seed Job                    │
+         Ingress         Secret + Service               ▼
+         ResourceQuota                           Jaeger (traces)
+              │
+              ├─ Phase Provisioning → GitHub: in_progress + PR comment
+              ├─ Phase Running      → GitHub: success + URL + PR comment
+              └─ Phase Terminating  → GitHub: inactive
 
-PR closed → cleanup workflow deletes the Cellenza CR → operator finalizer tears down all resources.
-
----
-
-## GitHub Integration
-
-The Cellenza Operator integrates natively with GitHub via two REST API calls made directly from its reconciliation loop — no external CI step or webhook is needed once the CR is applied.
-
-### API calls
-
-#### 1. Deployment Status
-```
-POST /repos/{owner}/{repo}/deployments/{deploymentId}/statuses
-```
-
-The operator maps its internal phase to a GitHub Deployment state:
-
-| Operator phase | GitHub state | Triggered when |
-|---|---|---|
-| `Pending` | `queued` | Waiting for approval (`requiresApproval=true`) |
-| `Provisioning` | `in_progress` | CR created, resources being provisioned |
-| `Running` | `success` + `environment_url` | All resources ready, Ingress reachable |
-| `Failed` | `failure` | Any reconciliation error |
-| `Terminating` | `inactive` | PR closed, finalizer running |
-
-#### 2. PR Comment
-```
-POST /repos/{owner}/{repo}/issues/{prNumber}/comments
-```
-
-The operator posts **three comments** across the PR lifecycle:
-
-| Phase | Comment |
-|---|---|
-| `Provisioning` | `Cellenza Preview Provisioning` with the target environment |
-| `Running` | `Cellenza Preview Ready` with URL, namespace, expiry, app/database/migration/seed/telemetry evidence |
-| `Failed` | `Cellenza Preview Failed` with diagnosis, failing component, recent warning events, and useful `kubectl` commands |
-| PR closed | `Preview environment **pr-42** supprimé.` (posted by `cleanup.yaml`) |
-
-Example failure comment:
-
-```text
-Cellenza Preview Failed
-
-Environment: pr-42
-Namespace: preview-pr-42
-
-Diagnosis:
-- Reason: DatabaseMigrationFailed
-- Component: migration
-- Message: Job postgres-migrate failed: BackoffLimitExceeded
-
-Debug Commands:
-kubectl describe cellenza pr-42
-kubectl get pods -n preview-pr-42
-kubectl logs -n preview-pr-42 job/postgres-migrate
-```
-
-### Full flow
-
-```
-GitHub Actions (preview.yaml)
-  │
-  ├─ 1. Kaniko build + push image to GHCR
-  │
-  ├─ 2. github.rest.repos.createDeployment()
-  │       └─ returns deploymentId
-  │
-  ├─ 3. kubectl apply Cellenza CR
-  │       └─ spec.github.deploymentId: <id from step 2>
-  │
-  └─ Cellenza Operator (reconcile loop)
-       │
-       ├─ Provisioning  →  POST statuses { state: "in_progress" }
-       │                   POST issues/42/comments { body: "🔄 Provisioning..." }
-       │
-       ├─ Resources ready
-       │       ├─  POST statuses { state: "success", environment_url: "http://pr-42..." }
-       │       └─  POST issues/42/comments { body: "## Preview Environment Ready..." }
-       │
-       └─ PR closed → kubectl delete Cellenza
-               └─ Finalizer  →  POST statuses { state: "inactive" }
-
-GitHub Actions (cleanup.yaml)
-  └─ PR closed → kubectl delete Cellenza → wait for deletion
-               └─ POST issues/42/comments { body: "Preview environment pr-42 supprimé." }
-```
-
-### Spec fields
-
-```yaml
-spec:
-  github:
-    enabled: true
-    owner: <github-org-or-user>
-    repo: <repository-name>
-    deploymentId: 123456789        # created by the workflow before kubectl apply
-    environment: pr-42             # label shown in GitHub Environments tab
-    commentOnReady: true           # post PR comment when Running
-    tokenSecretRef:
-      name: github-token-pr-42     # Secret in cellenza-operator-system
-      namespace: cellenza-operator-system
-      key: token
-```
-
-The GitHub token Secret is created by the workflow using `secrets.GITHUB_TOKEN` — no manual secret management needed.
-
-### Status fields
-
-After each notification the operator writes the result to `.status.github`:
-
-```yaml
-status:
-  github:
-    deploymentState: success
-    lastNotifiedPhase: Running
-    lastEnvironmentUrl: http://pr-42.preview.localtest.me:8080
-    commentId: 987654321           # 0 if commentOnReady is false
-    lastError: ""                  # populated on API failure, non-blocking
-    lastNotifiedAt: "2026-04-29T10:30:00Z"
-```
-
-The operator is **idempotent**: before any API call it checks that `deploymentState`, `lastEnvironmentUrl`, `lastNotifiedPhase`, and `commentId` have not already been written for the current state. Duplicate calls are skipped even if the reconciliation loop runs multiple times.
-
-### Inspect GitHub status
-
-```bash
-# Current GitHub integration state
-kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github}' | jq .
-
-# Check for non-blocking GitHub errors
-kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github.lastError}'
+PR closed → cleanup.yaml → kubectl delete Cellenza → finalizer teardown
 ```
 
 ---
@@ -168,7 +42,7 @@ kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github.lastError}'
 | Tool | Version | Install |
 |------|---------|---------|
 | Docker | 24+ | https://docs.docker.com/get-docker/ |
-| Kind | 0.25+ | `go install sigs.k8s.io/kind@latest` or [releases](https://github.com/kubernetes-sigs/kind/releases) |
+| Kind | 0.25+ | `go install sigs.k8s.io/kind@latest` |
 | kubectl | 1.28+ | https://kubernetes.io/docs/tasks/tools/ |
 | Helm | 3.14+ | https://helm.sh/docs/intro/install/ |
 | gh CLI | 2.0+ | https://cli.github.com/ |
@@ -179,11 +53,6 @@ kubectl get cellenza pr-<NUMBER> -o jsonpath='{.status.github.lastError}'
 
 ```bash
 kind create cluster --name testing
-```
-
-Verify:
-
-```bash
 kubectl get nodes
 # NAME                    STATUS   ROLES           AGE   VERSION
 # testing-control-plane   Ready    control-plane   ...   v1.35.0
@@ -193,12 +62,7 @@ kubectl get nodes
 
 ## Step 2 — Install cert-manager
 
-Required by the Cellenza Operator webhook and the OpenTelemetry Operator.
-
 ```bash
-helm repo add cert-manager https://charts.jetstack.io
-helm repo update
-
 helm install cert-manager cert-manager \
   --repo https://charts.jetstack.io \
   --namespace cert-manager \
@@ -215,10 +79,8 @@ kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout
 ## Step 3 — Install ingress-nginx
 
 ```bash
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
 helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --repo https://kubernetes.github.io/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace \
   --version 4.15.1
@@ -230,21 +92,14 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 
 ## Step 4 — Install the Cellenza Operator
 
-The chart is published via OCI to GHCR. No `helm repo add` needed.
-
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.7.3 \
+  --version 0.7.0 \
   --namespace cellenza-operator-system \
   --create-namespace
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
-```
-
-Verify the CRD is installed:
-
-```bash
 kubectl get crd cellenzas.platform.company.io
 ```
 
@@ -252,13 +107,9 @@ kubectl get crd cellenzas.platform.company.io
 
 ## Step 5 — Install OpenTelemetry Operator
 
-Required to inject Python auto-instrumentation into preview pods.
-
 ```bash
-helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
-helm repo update
-
 helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
+  --repo https://open-telemetry.github.io/opentelemetry-helm-charts \
   --namespace opentelemetry-operator-system \
   --create-namespace \
   --version 0.110.0 \
@@ -270,19 +121,13 @@ kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry
 
 ---
 
-## Step 6 — Deploy Jaeger and configure the OTel Collector
-
-A single command deploys Jaeger (all-in-one, in-memory) and configures the OpenTelemetry Collector + Python auto-instrumentation:
+## Step 6 — Deploy Jaeger and OTel Collector
 
 ```bash
-# Jaeger all-in-one
 kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/jaeger.yaml
-
 kubectl -n observability rollout status deployment/jaeger --timeout=120s
 
-# OTel Collector + Python Instrumentation CR
 kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/otel.yaml
-
 kubectl -n observability rollout status deployment/otel-collector --timeout=120s
 ```
 
@@ -293,34 +138,21 @@ kubectl get otelcol -n observability
 kubectl get instrumentation -n observability
 ```
 
-Expected output:
-
-```
-NAME   MODE         VERSION   READY
-otel   deployment   0.148.0   1/1
-
-NAME     ENDPOINT                                                        SAMPLER
-python   http://otel-collector.observability.svc.cluster.local:4318      parentbased_traceidratio
-```
-
 ---
 
 ## Step 7 — Deploy the self-hosted GitHub Actions runner
 
-The runner runs inside the cluster so it has direct access to the Kubernetes API.  
-Its service account has `cluster-admin` rights to create Jobs, Secrets, and Cellenza resources.
-
 ### 7.1 Generate a runner registration token
 
-> Tokens expire after **1 hour**. If the runner pod restarts, repeat this step.
+> Tokens expire after **1 hour**. Regenerate if the runner pod restarts.
 
 ```bash
 gh api -X POST repos/<YOUR_OWNER>/<YOUR_REPO>/actions/runners/registration-token --jq '.token'
 ```
 
-### 7.2 Create `runner.yaml`
+### 7.2 Create and apply `runner.yaml`
 
-Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, and `<TOKEN>` with the values from the previous step.
+Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, `<TOKEN>`:
 
 ```yaml
 ---
@@ -396,8 +228,6 @@ spec:
             path: /var/run/docker.sock
 ```
 
-### 7.3 Apply and verify
-
 ```bash
 kubectl apply -f runner.yaml
 kubectl -n github-runner rollout status deployment/github-runner --timeout=60s
@@ -405,31 +235,9 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected last line: "Listening for Jobs"
 ```
 
-Verify the runner appears as **online** in GitHub:
-
-```bash
-gh api repos/<YOUR_OWNER>/<YOUR_REPO>/actions/runners \
-  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
-```
-
 ---
 
-## Step 8 — Fork or configure this repository
-
-The GitHub Actions workflows are already in `.github/workflows/`:
-
-| Workflow | Trigger | Purpose |
-|----------|---------|---------|
-| `preview.yaml` | PR opened / updated | Build image, deploy preview, post GitHub Deployment |
-| `cleanup.yaml` | PR closed | Delete Cellenza CR, mark deployment as inactive |
-
-The workflows use only `secrets.GITHUB_TOKEN` — no additional secrets are needed.
-
----
-
-## Step 9 — Open a pull request
-
-Create a branch with any change in the application code (not in `.github/workflows/`):
+## Step 8 — Open a pull request
 
 ```bash
 git checkout -b my-feature
@@ -440,10 +248,176 @@ git push origin my-feature
 gh pr create --title "test: trigger preview" --body "Testing the preview flow"
 ```
 
-The `Preview Environment` workflow starts automatically on the self-hosted runner.
+> **Important:** Do not modify `.github/workflows/` files in your PR branch.
 
-> **Important:** Do not modify `.github/workflows/` files in your PR branch — GitHub will not
-> trigger the workflow on self-hosted runners when the workflow files themselves are changed.
+---
+
+## Complete Cellenza CR example
+
+This is the full CR applied by `preview.yaml`. It shows every operator feature.
+
+```yaml
+apiVersion: platform.company.io/v1alpha1
+kind: Cellenza
+metadata:
+  name: pr-42
+spec:
+  # ── App ──────────────────────────────────────────────────────────────────
+  branch: feature/my-feature
+  prNumber: 42
+  image: ghcr.io/ihsenalaya/idp-testing:pr-42
+  replicas: 1
+  ttl: 48h
+  resourceTier: medium        # small | medium | large
+
+  # ── Approval gate (optional) ──────────────────────────────────────────────
+  requiresApproval: false
+  # approvedBy: platform-team # unblocks provisioning when requiresApproval=true
+
+  # ── Database ──────────────────────────────────────────────────────────────
+  database:
+    enabled: true
+    version: "16"
+    databaseName: appdb
+
+    migration:
+      enabled: true
+      command: ["python", "manage.py", "migrate"]
+      # image: defaults to spec.image
+
+    seed:
+      enabled: true
+      command: ["python", "manage.py", "loaddata", "fixtures/dev.json"]
+      # image: defaults to spec.image
+
+    # resetRequested: true    # set by @cellenza reset-db — re-runs migration+seed
+
+  # ── Telemetry ─────────────────────────────────────────────────────────────
+  telemetry:
+    enabled: true
+    serviceName: idp-testing-pr-42
+    autoInstrumentation:
+      language: python
+      instrumentationRef: observability/python
+
+  # ── GitHub integration ────────────────────────────────────────────────────
+  github:
+    enabled: true
+    owner: ihsenalaya
+    repo: idp-testing
+    deploymentId: 123456789   # returned by github.rest.repos.createDeployment()
+    environment: pr-42
+    commentOnReady: true
+    tokenSecretRef:
+      name: github-token-pr-42
+      namespace: cellenza-operator-system
+      key: token
+```
+
+### Environment variables injected automatically
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `postgresql://preview_42:<pw>@postgres:5432/appdb` |
+| `POSTGRES_USER` | `preview_42` |
+| `POSTGRES_PASSWORD` | auto-generated |
+| `POSTGRES_DB` | `appdb` |
+| `PREVIEW_BRANCH` | `feature/my-feature` |
+| `PREVIEW_PR` | `42` |
+| `OTEL_SERVICE_NAME` | `idp-testing-pr-42` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `cellenza.name=pr-42,cellenza.pr_number=42,...` |
+
+### Lifecycle phases
+
+```
+Pending       → waiting for approval (requiresApproval: true)
+Provisioning  → namespace, PostgreSQL, migration, seed running
+Running       → all resources ready, URL reachable
+Terminating   → PR closed, finalizer cleaning up
+Failed        → reconciliation error (diagnostics + pod logs in status)
+```
+
+---
+
+## Inspect environment status
+
+```bash
+# Overview
+kubectl get cz
+# NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
+# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me...   2026-05-01T10:00:00Z   2h
+
+# Full status
+kubectl get cz pr-42 -o jsonpath='{.status}' | jq .
+```
+
+```json
+{
+  "phase": "Running",
+  "url": "http://pr-42.preview.localtest.me:8080",
+  "namespaceName": "preview-pr-42",
+  "readyAt": "2026-04-29T10:00:00Z",
+  "expiresAt": "2026-05-01T10:00:00Z",
+  "database": {
+    "ready": true,
+    "host": "postgres",
+    "databaseName": "appdb",
+    "migration": "Succeeded",
+    "seed": "Succeeded"
+  },
+  "github": {
+    "deploymentState": "success",
+    "lastNotifiedPhase": "Running",
+    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080",
+    "commentId": 987654321
+  }
+}
+```
+
+---
+
+## GitHub Integration
+
+The operator calls the GitHub API directly from its reconciliation loop — no external webhook needed.
+
+### Phase → GitHub Deployment state mapping
+
+| Phase | GitHub state | PR comment |
+|---|---|---|
+| `Pending` | `queued` | — |
+| `Provisioning` | `in_progress` | `🔄 Provisioning en cours...` |
+| `Running` | `success` + URL | `## Cellenza Preview Ready` + URL + DB evidence |
+| `Failed` | `failure` | `## Cellenza Preview Failed` + diagnostics + pod logs |
+| `Terminating` | `inactive` | — (posted by cleanup.yaml) |
+
+### Idempotence
+
+Before every API call the operator checks `status.github.deploymentState`, `lastNotifiedPhase`, and `commentId`. If already written → zero API call, even across multiple reconcile loops.
+
+```bash
+# Current GitHub state
+kubectl get cz pr-42 -o jsonpath='{.status.github}' | jq .
+
+# Non-blocking errors
+kubectl get cz pr-42 -o jsonpath='{.status.github.lastError}'
+```
+
+### spec fields
+
+```yaml
+spec:
+  github:
+    enabled: true
+    owner: ihsenalaya
+    repo: idp-testing
+    deploymentId: 123456789
+    environment: pr-42
+    commentOnReady: true
+    tokenSecretRef:
+      name: github-token-pr-42
+      namespace: cellenza-operator-system
+      key: token
+```
 
 ---
 
@@ -455,16 +429,13 @@ The `Preview Environment` workflow starts automatically on the self-hosted runne
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
 ```
 
-Leave this running in a terminal. The preview URL is printed in the PR comment:
+Preview URL printed in PR comment:
 
 ```
 http://pr-<NUMBER>.preview.localtest.me:8080
 ```
 
-`localtest.me` resolves to `127.0.0.1` automatically — no DNS configuration needed.
-
-> **WSL2:** Run the port-forward inside WSL2. Windows browsers reach `localhost:8080` through
-> the WSL2 localhost forwarding (enabled by default in WSL2 ≥ 2.0).
+> **WSL2:** Run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
 
 ### Jaeger UI
 
@@ -472,163 +443,105 @@ http://pr-<NUMBER>.preview.localtest.me:8080
 kubectl port-forward -n observability svc/jaeger 16686:16686
 ```
 
-Open [http://localhost:16686](http://localhost:16686). Select service **`idp-testing`** to see traces from the Flask app.
+Open [http://localhost:16686](http://localhost:16686) → select service **`idp-testing-pr-42`**.
+
+---
+
+## GitHub Copilot Extension
+
+The Cellenza Extension lets developers manage preview environments directly from GitHub Copilot Chat in VS Code — no `kubectl` needed.
+
+### Available commands
+
+| Command | Description |
+|---|---|
+| `@cellenza list` | List all active environments |
+| `@cellenza status pr-42` | Phase, URL, DB state, TTL remaining |
+| `@cellenza logs pr-42` | Last 40 lines from the app pod |
+| `@cellenza extend pr-42 24h` | Extend TTL immediately |
+| `@cellenza wake pr-42` | Restart a scaled-down environment |
+| `@cellenza reset-db pr-42` | Delete + re-run migration and seed |
+| `@cellenza help` | Show all commands |
+
+### Deploy
+
+```bash
+kubectl apply -f config/extension/rbac.yaml
+kubectl apply -f config/extension/deployment.yaml
+kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension --timeout=60s
+```
+
+### Expose for local Kind (ngrok)
+
+```bash
+kubectl port-forward -n cellenza-operator-system svc/cellenza-extension 8090:8090 &
+ngrok http 8090
+# Copy the HTTPS URL → paste as webhook URL in your GitHub App settings
+```
 
 ---
 
 ## Troubleshooting
 
-### Workflow does not trigger
-
-The runner pod may have restarted and its token expired. Regenerate and redeploy:
+### Workflow does not trigger — runner token expired
 
 ```bash
 NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
 kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
 kubectl rollout restart deployment/github-runner -n github-runner
 kubectl logs -n github-runner deployment/github-runner --tail=5
+# Expected: "Listening for Jobs"
 ```
 
 ### No traces in Jaeger
 
-Verify the OTel annotation was injected on the preview pod:
-
 ```bash
-kubectl get pod -n preview-pr-<NUMBER> -l app=pr-<NUMBER> \
+kubectl get pod -n preview-pr-<N> -l app=cellenza-preview \
   -o jsonpath='{.items[0].metadata.annotations}' | grep instrumentation
+# Expected: instrumentation.opentelemetry.io/inject-python: observability/python
 ```
 
-Expected: `instrumentation.opentelemetry.io/inject-python: observability/python`
-
-If missing, check that `spec.telemetry.enabled: true` is in the Cellenza resource:
+### Preview stuck in Provisioning
 
 ```bash
-kubectl get cellenza pr-<NUMBER> -o yaml | grep -A8 telemetry
+kubectl describe cz pr-<N>
+kubectl get events -n preview-pr-<N> --sort-by='.lastTimestamp'
 ```
 
-### Cellenza stuck in Pending
+### Preview Failed — read diagnostics
+
+The operator captures pod logs, Kubernetes events, and debug commands automatically:
 
 ```bash
-kubectl describe cellenza pr-<NUMBER>
-kubectl get events -n preview-pr-<NUMBER> --sort-by='.lastTimestamp'
-```
-
-### Preview pod CrashLoopBackOff
-
-```bash
-kubectl logs -n preview-pr-<NUMBER> -l app=pr-<NUMBER>
+kubectl get cz pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
+# .podLogs    → last 30 lines of the crashed app container
+# .lastEvents → recent Warning events from the namespace
+# .debugCommands → kubectl commands to run for further investigation
 ```
 
 ---
 
 ## Application
 
-The application is the **Cellenza Demo App** — a Flask guestbook backed by PostgreSQL:
+The demo app is a Flask guestbook backed by PostgreSQL:
 
 | Route | Description |
-|-------|-------------|
-| `GET /` | PostgreSQL status, environment variables, message board |
+|---|---|
+| `GET /` | PostgreSQL status, env vars, message board |
 | `POST /add` | Insert a message into the database |
-| `GET /healthz` | Returns `ok` — used by Kubernetes liveness/readiness probes |
-
-The operator injects the following environment variables automatically:
-
-| Variable | Source |
-|----------|--------|
-| `DATABASE_URL` | Built from the PostgreSQL Secret |
-| `POSTGRES_DB` | From the database spec |
-| `POSTGRES_USER` | From the database Secret |
-| `PREVIEW_BRANCH` | `spec.branch` |
-| `PREVIEW_PR` | `spec.prNumber` |
-
-### Database migration and seed jobs
-
-Cellenza Operator `0.7.3` supports optional database jobs before the preview app is rolled out. The operator creates PostgreSQL, injects the database credentials into the job container, waits for the job to succeed, then deploys the app.
-
-The current demo app initializes its simple `messages` table at runtime in `app.py`, so the default workflow keeps migration and seed disabled. To move that setup into proper preview jobs, add scripts to the application image, then enable the fields in `.github/workflows/preview.yaml`.
-
-Example migration script:
-
-```python
-# scripts/migrate.py
-import os
-import psycopg2
-
-conn = psycopg2.connect(os.environ["DATABASE_URL"])
-cur = conn.cursor()
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS messages (
-        id        SERIAL PRIMARY KEY,
-        author    TEXT NOT NULL DEFAULT 'anonymous',
-        text      TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-""")
-conn.commit()
-cur.close()
-conn.close()
-```
-
-Example seed script:
-
-```python
-# scripts/seed.py
-import os
-import psycopg2
-
-conn = psycopg2.connect(os.environ["DATABASE_URL"])
-cur = conn.cursor()
-cur.execute("""
-    INSERT INTO messages (author, text)
-    SELECT 'Cellenza', 'Preview database seeded successfully'
-    WHERE NOT EXISTS (
-        SELECT 1 FROM messages
-        WHERE author = 'Cellenza'
-          AND text = 'Preview database seeded successfully'
-    )
-""")
-conn.commit()
-cur.close()
-conn.close()
-```
-
-Then enable the jobs in the Cellenza manifest generated by the preview workflow:
-
-```yaml
-database:
-  enabled: true
-  databaseName: appdb
-  migration:
-    enabled: true
-    command: ["python", "scripts/migrate.py"]
-  seed:
-    enabled: true
-    command: ["python", "scripts/seed.py"]
-```
-
-The operator injects `DATABASE_URL`, `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` into both jobs. The app Deployment is created only after migration and seed succeed.
-
-Useful checks:
-
-```bash
-kubectl get cellenza pr-<NUMBER> \
-  -o jsonpath='{.status.database.migration}{"\n"}{.status.database.seed}{"\n"}'
-
-kubectl logs -n preview-pr-<NUMBER> job/postgres-migrate
-kubectl logs -n preview-pr-<NUMBER> job/postgres-seed
-kubectl describe cellenza pr-<NUMBER>
-```
+| `GET /healthz` | Returns `ok` — liveness/readiness probe |
 
 ---
 
-## Summary of installed components
+## Installed components
 
-| Component | Namespace | Install | Version |
-|-----------|-----------|---------|---------|
-| cert-manager | `cert-manager` | Helm `cert-manager/cert-manager` | v1.20.2 |
-| ingress-nginx | `ingress-nginx` | Helm `ingress-nginx/ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | Helm OCI `ghcr.io/ihsenalaya/charts/cellenza-operator` | 0.7.3 |
-| OpenTelemetry Operator | `opentelemetry-operator-system` | Helm `open-telemetry/opentelemetry-operator` | 0.110.0 |
-| Jaeger (all-in-one) | `observability` | `kubectl apply -f jaeger.yaml` | 1.67 |
-| OTel Collector + Instrumentation | `observability` | `kubectl apply -f otel.yaml` | 0.148.0 |
-| GitHub Runner | `github-runner` | `kubectl apply -f runner.yaml` | `myoung34/github-runner:latest` |
+| Component | Namespace | Version |
+|-----------|-----------|---------|
+| cert-manager | `cert-manager` | v1.20.2 |
+| ingress-nginx | `ingress-nginx` | 4.15.1 |
+| Cellenza Operator | `cellenza-operator-system` | 0.7.0 |
+| OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
+| Jaeger (all-in-one) | `observability` | 1.67 |
+| OTel Collector + Instrumentation | `observability` | 0.148.0 |
+| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
+| Cellenza Extension | `cellenza-operator-system` | 0.7.0 |
