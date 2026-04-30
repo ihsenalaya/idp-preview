@@ -523,13 +523,103 @@ kubectl get cz pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
 
 ## Application
 
-The demo app is a Flask guestbook backed by PostgreSQL:
+The demo app is a Flask guestbook backed by PostgreSQL.
+
+### HTML UI
 
 | Route | Description |
 |---|---|
 | `GET /` | PostgreSQL status, env vars, message board |
 | `POST /add` | Insert a message into the database |
 | `GET /healthz` | Returns `ok` — liveness/readiness probe |
+
+### JSON REST API
+
+| Route | Description |
+|---|---|
+| `GET /api/messages` | List last 50 messages |
+| `POST /api/messages` | Create message `{"author":"…","text":"…"}` → 201 |
+| `GET /api/messages/<id>` | Get one message → 200 or 404 |
+| `DELETE /api/messages/<id>` | Delete message → 204 or 404 |
+| `GET /api/stats` | `{"total_messages": N, "latest": {…}}` |
+
+---
+
+## AI Enrichment
+
+When `spec.aiEnrichment.enabled: true`, the operator automatically generates seed data and integration tests **after the preview environment reaches Running phase**.
+
+### How it works
+
+```
+PR opened → preview Running
+                │
+                ▼
+    Operator fetches PR diff (GitHub API)
+    Operator dumps DB schema (pg_dump --schema-only Job)
+                │
+                ▼
+    AI generates:
+      ├── seed.sql   → coherent test data adapted to the PR changes
+      └── test.py    → integration tests targeting modified code paths
+                │
+                ▼
+    ai-seed Job  → psql seed.sql against the preview database
+    ai-tests Job → pip install requests && python test.py
+                │
+                ▼
+    Results visible in PR comment and @cellenza status pr-N
+```
+
+### Enable in Cellenza CR
+
+```yaml
+spec:
+  aiEnrichment:
+    enabled: true
+    apiSecretRef:
+      name: ai-api-key          # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
+      key: api-key
+    model: gpt-4o-mini          # optional, defaults to gpt-4o-mini
+```
+
+### Create the API key secret
+
+```bash
+# OpenAI
+kubectl create secret generic ai-api-key \
+  --from-literal=api-key=sk-... \
+  -n cellenza-operator-system
+
+# GitHub Models (free tier)
+kubectl create secret generic ai-api-key \
+  --from-literal=api-key=<GITHUB_TOKEN> \
+  -n cellenza-operator-system
+# Also set AI_API_URL=https://models.inference.ai.azure.com in operator env
+```
+
+### Trigger manually
+
+```bash
+# Re-run AI enrichment on an existing environment
+@cellenza enrich pr-42
+# or via kubectl
+kubectl patch cz pr-42 --type=json \
+  -p='[{"op":"remove","path":"/status/aiEnrichment"}]'
+```
+
+### Test format (tests/example_test.py)
+
+The AI generates a `test.py` that matches the format in `tests/example_test.py`:
+- Uses `APP_URL` environment variable (set automatically by the test Job)
+- Prints `PASS: test_name` or `FAIL: test_name — reason` per test
+- Installs `requests` via pip before running
+
+Run locally against a live environment:
+
+```bash
+APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
+```
 
 ---
 

@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, redirect
+from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
 
@@ -184,6 +184,102 @@ def add():
 @app.route("/healthz")
 def healthz():
     return "ok", 200
+
+
+# ── JSON REST API (used by AI enrichment tests) ──────────────────────────
+
+@app.route("/api/messages", methods=["GET"])
+def api_list_messages():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, author, text, created_at FROM messages ORDER BY created_at DESC LIMIT 50")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify([{"id": r[0], "author": r[1], "text": r[2], "created_at": r[3].isoformat()} for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/messages", methods=["POST"])
+def api_create_message():
+    data = request.get_json(silent=True) or {}
+    author = str(data.get("author", "anonymous"))[:50]
+    text = str(data.get("text", ""))[:200]
+    if not text.strip():
+        return jsonify({"error": "text is required"}), 400
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO messages (author, text) VALUES (%s, %s) RETURNING id, author, text, created_at",
+            (author, text),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        log("Created message via API", author=author)
+        return jsonify({"id": row[0], "author": row[1], "text": row[2], "created_at": row[3].isoformat()}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/messages/<int:msg_id>", methods=["GET"])
+def api_get_message(msg_id):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, author, text, created_at FROM messages WHERE id = %s", (msg_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"id": row[0], "author": row[1], "text": row[2], "created_at": row[3].isoformat()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/messages/<int:msg_id>", methods=["DELETE"])
+def api_delete_message(msg_id):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM messages WHERE id = %s RETURNING id", (msg_id,))
+        deleted = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        if deleted is None:
+            return jsonify({"error": "not found"}), 404
+        return "", 204
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM messages")
+        count = cur.fetchone()[0]
+        cur.execute("SELECT author, text, created_at FROM messages ORDER BY created_at DESC LIMIT 1")
+        latest = cur.fetchone()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "total_messages": count,
+            "latest": {
+                "author": latest[0],
+                "text": latest[1],
+                "created_at": latest[2].isoformat(),
+            } if latest else None,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
