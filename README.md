@@ -95,7 +95,7 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.10.0 \
+  --version 0.11.1 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -312,6 +312,18 @@ spec:
       name: github-token-pr-42
       namespace: cellenza-operator-system
       key: token
+
+  # ── AI Enrichment ─────────────────────────────────────────────────────────
+  aiEnrichment:
+    enabled: true
+    apiSecretRef:
+      name: ai-api-key        # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
+      key: api-key
+    model: gpt-4o             # gpt-4o-mini (default), gpt-4o, etc.
+    seed:
+      enabled: true           # runs ai-seed Job: psql seed.sql against the preview DB
+    tests:
+      enabled: true           # runs ai-tests Job: python test.py with APP_URL=http://app:80
 ```
 
 ### Environment variables injected automatically
@@ -370,6 +382,13 @@ kubectl get cz pr-42 -o jsonpath='{.status}' | jq .
     "lastNotifiedPhase": "Running",
     "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080",
     "commentId": 987654321
+  },
+  "aiEnrichment": {
+    "phase": "Succeeded",
+    "seedStatus": "Succeeded",
+    "testStatus": "Succeeded",
+    "testResults": ["PASS: test_health", "PASS: test_create_product", "PASS: test_stats"],
+    "completedAt": "2026-05-01T12:00:00Z"
   }
 }
 ```
@@ -523,25 +542,45 @@ kubectl get cz pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
 
 ## Application
 
-The demo app is a Flask guestbook backed by PostgreSQL.
+The demo app is a **product catalogue** (v2.0.0) backed by PostgreSQL — designed to showcase AI enrichment with a realistic business schema.
+
+### Database schema
+
+```sql
+categories (id, name, slug)
+products   (id, name, description, category_id, price NUMERIC, stock INT, discount_pct NUMERIC, created_at)
+reviews    (id, product_id, author, rating INT CHECK(1..5), comment, created_at)
+orders     (id, product_id, quantity, status, created_at)
+```
 
 ### HTML UI
 
 | Route | Description |
 |---|---|
-| `GET /` | PostgreSQL status, env vars, message board |
-| `POST /add` | Insert a message into the database |
+| `GET /` | PostgreSQL status, env vars, product grid with ratings and stock badges, AI enrichment card |
+| `POST /add-product` | Add a product via the HTML form |
 | `GET /healthz` | Returns `ok` — liveness/readiness probe |
+| `GET /ping` | Returns `pong` |
+
+The AI enrichment card appears on the homepage once `ai-seed` has run. It shows a table of AI-generated products with category, price, discount, stock, and star rating — along with totals for products, reviews, and orders.
 
 ### JSON REST API
 
-| Route | Description |
-|---|---|
-| `GET /api/messages` | List last 50 messages |
-| `POST /api/messages` | Create message `{"author":"…","text":"…"}` → 201 |
-| `GET /api/messages/<id>` | Get one message → 200 or 404 |
-| `DELETE /api/messages/<id>` | Delete message → 204 or 404 |
-| `GET /api/stats` | `{"total_messages": N, "latest": {…}}` |
+| Route | Method | Description |
+|---|---|---|
+| `/api/categories` | GET | List categories with `product_count` |
+| `/api/categories` | POST | Create `{"name":"…","slug":"…"}` → 201 |
+| `/api/products` | GET | List last 50 products with ratings |
+| `/api/products` | POST | Create `{"name":"…","price":9.99,"stock":10,"discount_pct":0}` → 201 |
+| `/api/products/<id>` | GET | Product detail with reviews → 200 or 404 |
+| `/api/products/<id>` | DELETE | Delete product → 204 or 404 |
+| `/api/products/<id>/reviews` | GET | List reviews for a product |
+| `/api/products/<id>/reviews` | POST | Create review `{"author":"…","rating":5,"comment":"…"}` → 201 |
+| `/api/orders` | GET | List last 50 orders |
+| `/api/orders` | POST | Create order `{"product_id":1,"quantity":2}` — checks stock, returns 409 if insufficient → 201 |
+| `/api/stats` | GET | `{"total_products":N,"total_categories":N,"total_reviews":N,"total_orders":N,"out_of_stock":N,"low_stock":N,"avg_rating":4.2,"categories":[…]}` |
+| `/api/seeded-data` | GET | All products, categories, reviews and order count — used by the AI enrichment UI card |
+| `/api/version` | GET | `{"version":"2.0.0","feature":"product-catalogue"}` |
 
 ---
 
@@ -615,10 +654,30 @@ kubectl patch cz pr-42 --type=json \
 
 ### Test format (tests/example_test.py)
 
-The AI generates a `test.py` that matches the format in `tests/example_test.py`:
-- Uses `APP_URL` environment variable (set automatically by the test Job)
-- Prints `PASS: test_name` or `FAIL: test_name — reason` per test
-- Installs `requests` via pip before running
+`tests/example_test.py` is a template of 18 integration tests that the AI uses as a model when generating `test.py` for a new PR:
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_health` | `GET /healthz` → 200 `ok` |
+| 2 | `test_version` | `GET /api/version` → `2.0.0`, `product-catalogue` |
+| 3 | `test_list_categories_returns_json` | `GET /api/categories` → list |
+| 4 | `test_create_category` | `POST /api/categories` → 201 |
+| 5 | `test_list_products_returns_json` | `GET /api/products` → list |
+| 6 | `test_create_product` | `POST /api/products` → 201 |
+| 7 | `test_get_product` | `GET /api/products/<id>` → 200 |
+| 8 | `test_get_nonexistent_product` | `GET /api/products/999999` → 404 |
+| 9 | `test_delete_product` | `DELETE /api/products/<id>` → 204, then 404 |
+| 10 | `test_create_product_requires_price` | `POST` without price → 400 |
+| 11 | `test_create_review` | `POST /api/products/<id>/reviews` → 201 |
+| 12 | `test_review_rating_validation` | Review with rating 6 → 400 |
+| 13 | `test_list_reviews` | `GET /api/products/<id>/reviews` → list |
+| 14 | `test_create_order` | `POST /api/orders` → 201, stock decremented |
+| 15 | `test_order_insufficient_stock` | Order qty > stock → 409 |
+| 16 | `test_list_orders` | `GET /api/orders` → list |
+| 17 | `test_stats` | `GET /api/stats` → all keys present |
+| 18 | `test_seeded_data` | `GET /api/seeded-data` → products, categories, reviews |
+
+Each test prints `PASS: test_name` or `FAIL: test_name — reason`. The AI-generated `test.py` follows the same format but is adapted to the specific changes in the PR.
 
 Run locally against a live environment:
 
@@ -634,9 +693,9 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|
 | cert-manager | `cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | 0.10.0 |
+| Cellenza Operator | `cellenza-operator-system` | **0.11.1** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | 1.67 |
 | OTel Collector + Instrumentation | `observability` | 0.148.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | 0.10.0 |
+| Cellenza Extension | `cellenza-operator-system` | **0.11.1** |
