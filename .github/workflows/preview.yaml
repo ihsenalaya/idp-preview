@@ -132,6 +132,9 @@ jobs:
             database:
               enabled: true
               databaseName: appdb
+              migration:
+                enabled: true
+                command: ["alembic", "upgrade", "head"]
             telemetry:
               enabled: true
               serviceName: idp-testing
