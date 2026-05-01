@@ -133,6 +133,12 @@ jobs:
               autoInstrumentation:
                 language: python
                 instrumentationRef: observability/python
+            aiEnrichment:
+              enabled: true
+              apiSecretRef:
+                name: ai-api-key
+                key: api-key
+              model: gpt-4o
             github:
               enabled: true
               owner: ${{ github.repository_owner }}

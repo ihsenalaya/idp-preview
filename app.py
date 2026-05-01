@@ -36,7 +36,7 @@ def init_db():
     log("Initialized PostgreSQL schema", table="messages")
 
 
-def render(pg_version, rows, db_ok, error=""):
+def render(pg_version, rows, db_ok, error="", ai_data=None):
     status_color = "#22c55e" if db_ok else "#ef4444"
     status_label = "Connecté" if db_ok else "Erreur"
 
@@ -57,6 +57,40 @@ def render(pg_version, rows, db_ok, error=""):
     for key in ("POSTGRES_USER", "POSTGRES_DB", "PREVIEW_BRANCH", "PREVIEW_PR", "ENVIRONMENT"):
         val = os.environ.get(key, "—")
         env_items += f'<div class="env-item"><span class="key">{key}</span>{val}</div>'
+
+    # AI Enrichment card
+    if ai_data and ai_data.get("rows"):
+        author_chips = "".join(
+            f'<span class="author-chip">{a}</span>'
+            for a in (ai_data.get("distinct_authors") or [])
+        )
+        ai_rows_html = ""
+        for r in ai_data["rows"]:
+            ai_rows_html += f"""
+        <tr class="ai-rows">
+            <td>{r[0]}</td>
+            <td><strong>{r[1]}</strong></td>
+            <td>{r[2]}</td>
+            <td>{r[3].strftime('%d/%m/%Y %H:%M:%S')}</td>
+        </tr>"""
+        ai_card = f"""
+    <div class="card">
+      <h2><span class="ai-badge">&#129302; AI</span> Données générées par enrichissement IA</h2>
+      <p style="font-size:.85rem;color:#64748b;margin-bottom:.75rem">
+        Seed SQL et tests générés automatiquement à partir du diff de la PR par le modèle
+        <strong>{os.environ.get("AI_MODEL", "gpt-4o")}</strong>.
+        <strong>{ai_data["total_messages"]}</strong> message(s) inséré(s).
+      </p>
+      <div style="margin-bottom:.75rem">{author_chips}</div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Auteur</th><th>Message</th><th>Date</th></tr>
+        </thead>
+        <tbody>{ai_rows_html}</tbody>
+      </table>
+    </div>"""
+    else:
+        ai_card = ""
 
     return f"""<!DOCTYPE html>
 <html lang="fr">
@@ -105,6 +139,13 @@ def render(pg_version, rows, db_ok, error=""):
     tbody tr:hover td {{ background: #fafafa; }}
     .empty     {{ text-align: center; color: #cbd5e1; padding: 2rem; font-style: italic; }}
     footer     {{ text-align: center; color: #94a3b8; font-size: .78rem; padding: 2rem; }}
+    .ai-badge  {{ display: inline-block; background: #7c3aed; color: white;
+                  padding: .2rem .65rem; border-radius: 999px; font-size: .75rem;
+                  font-weight: 700; letter-spacing: .5px; margin-right: .5rem; }}
+    .author-chip {{ display: inline-block; background: #ede9fe; color: #6d28d9;
+                    border: 1px solid #c4b5fd; border-radius: 999px; padding: .15rem .6rem;
+                    font-size: .78rem; margin: .15rem; }}
+    .ai-rows td {{ font-size: .85rem; }}
   </style>
 </head>
 <body>
@@ -126,6 +167,8 @@ def render(pg_version, rows, db_ok, error=""):
       {f'<p class="error">{error}</p>' if error else ''}
       <div class="env-grid">{env_items}</div>
     </div>
+
+    {ai_card}
 
     <div class="card">
       <h2>Test Cellenza Operator</h2>
@@ -157,10 +200,17 @@ def index():
         pg_version = cur.fetchone()[0].split(",")[0]
         cur.execute("SELECT id, author, text, created_at FROM messages ORDER BY created_at DESC LIMIT 20")
         rows = cur.fetchall()
+        cur.execute("SELECT COUNT(*) FROM messages")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT id, author, text, created_at FROM messages ORDER BY created_at ASC")
+        seeded_rows = cur.fetchall()
+        cur.execute("SELECT DISTINCT author FROM messages ORDER BY author")
+        distinct_authors = [r[0] for r in cur.fetchall()]
         cur.close()
         conn.close()
         log("Read messages from PostgreSQL", rows=len(rows))
-        return render(pg_version, rows, db_ok=True)
+        ai_data = {"total_messages": total, "rows": seeded_rows, "distinct_authors": distinct_authors}
+        return render(pg_version, rows, db_ok=True, ai_data=ai_data)
     except Exception as e:
         log("PostgreSQL query failed", error=str(e))
         return render("n/a", [], db_ok=False, error=str(e)), 500
@@ -268,15 +318,38 @@ def api_stats():
         count = cur.fetchone()[0]
         cur.execute("SELECT author, text, created_at FROM messages ORDER BY created_at DESC LIMIT 1")
         latest = cur.fetchone()
+        cur.execute("SELECT DISTINCT author FROM messages ORDER BY author")
+        distinct_authors = [r[0] for r in cur.fetchall()]
         cur.close()
         conn.close()
         return jsonify({
             "total_messages": count,
+            "distinct_authors": distinct_authors,
             "latest": {
                 "author": latest[0],
                 "text": latest[1],
                 "created_at": latest[2].isoformat(),
             } if latest else None,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/seeded-data", methods=["GET"])
+def api_seeded_data():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, author, text, created_at FROM messages ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        cur.execute("SELECT DISTINCT author FROM messages ORDER BY author")
+        distinct_authors = [r[0] for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return jsonify({
+            "table": "messages",
+            "rows": [{"id": r[0], "author": r[1], "text": r[2], "created_at": r[3].isoformat()} for r in rows],
+            "distinct_authors": distinct_authors,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -292,4 +365,9 @@ if __name__ == "__main__":
 def ping():
     return "pong", 200
 # test
-# test
+# 
+
+
+@app.route("/api/version", methods=["GET"])
+def api_version():
+    return jsonify({"version": "1.1.0", "feature": "ai-enrichment-test"})
