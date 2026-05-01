@@ -95,7 +95,7 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.11.2 \
+  --version 0.11.4 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -713,9 +713,9 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|
 | cert-manager | `cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | **0.11.2** |
+| Cellenza Operator | `cellenza-operator-system` | **0.11.4** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | 1.67.0 |
 | OTel Collector + Instrumentation | `observability` | 0.148.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | **0.11.2** |
+| Cellenza Extension | `cellenza-operator-system` | **0.11.4** |
