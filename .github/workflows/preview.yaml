@@ -139,6 +139,10 @@ jobs:
                 name: ai-api-key
                 key: api-key
               model: gpt-4o
+              seed:
+                enabled: true
+              tests:
+                enabled: true
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
