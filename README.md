@@ -15,7 +15,7 @@ GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
        │
        ├─ Kaniko ──► builds image ──► pushes to GHCR
        ├─ github.rest.repos.createDeployment() ──► returns deploymentId
-       ├─ kubectl create secret (GITHUB_TOKEN)
+       ├─ kubectl apply secret (CELLENZA_GITHUB_TOKEN)
        └─ kubectl apply Cellenza CR ──► spec.github.deploymentId = <id>
                               │
                               ▼
@@ -235,6 +235,22 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected last line: "Listening for Jobs"
 ```
 
+### 7.3 Create the long-lived GitHub token secret for the workflow
+
+The preview workflow uses a repository or organization Actions secret named `CELLENZA_GITHUB_TOKEN`.
+This must be a long-lived GitHub token, not the ephemeral workflow `GITHUB_TOKEN`, because the operator updates GitHub Deployments and fetches PR diffs after the workflow has finished.
+
+Recommended: store it as an organization Actions secret if multiple repositories reuse the same preview platform.
+
+Minimum repository permissions for a fine-grained token:
+
+- `Contents`: read
+- `Pull requests`: read
+- `Issues`: write
+- `Deployments`: write
+
+The workflow materializes that token into the cluster as `Secret/cellenza-github-token` in `cellenza-operator-system`.
+
 ---
 
 ## Step 8 — Open a pull request
@@ -309,7 +325,7 @@ spec:
     environment: pr-42
     commentOnReady: true
     tokenSecretRef:
-      name: github-token-pr-42
+      name: cellenza-github-token
       namespace: cellenza-operator-system
       key: token
 
@@ -319,6 +335,10 @@ spec:
     apiSecretRef:
       name: ai-api-key        # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
       key: api-key
+    githubTokenSecretRef:
+      name: cellenza-github-token
+      namespace: cellenza-operator-system
+      key: token
     model: gpt-4o             # gpt-4o-mini (default), gpt-4o, etc.
     seed:
       enabled: true           # runs ai-seed Job: psql seed.sql against the preview DB
