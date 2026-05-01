@@ -7,7 +7,7 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
-  GITHUB_TOKEN_SECRET: github-token-pr-${{ github.event.pull_request.number }}
+  CONTROLLER_GITHUB_TOKEN_SECRET: cellenza-github-token
   KANIKO_SECRET: ghcr-secret-${{ github.run_id }}
   KANIKO_JOB: kaniko-${{ github.run_id }}
 
@@ -106,9 +106,14 @@ jobs:
 
       - name: Create controller GitHub token secret
         run: |
-          kubectl create secret generic "$GITHUB_TOKEN_SECRET" \
+          if [ -z '${{ secrets.CELLENZA_GITHUB_TOKEN }}' ]; then
+            echo "CELLENZA_GITHUB_TOKEN GitHub Actions secret is required" >&2
+            exit 1
+          fi
+
+          kubectl create secret generic "$CONTROLLER_GITHUB_TOKEN_SECRET" \
             --namespace=cellenza-operator-system \
-            --from-literal=token='${{ secrets.GITHUB_TOKEN }}' \
+            --from-literal=token='${{ secrets.CELLENZA_GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Apply Cellenza manifest
@@ -127,12 +132,29 @@ jobs:
             database:
               enabled: true
               databaseName: appdb
+              migration:
+                enabled: true
+                command: ["alembic", "upgrade", "head"]
             telemetry:
               enabled: true
               serviceName: idp-testing
               autoInstrumentation:
                 language: python
                 instrumentationRef: observability/python
+            aiEnrichment:
+              enabled: true
+              apiSecretRef:
+                name: ai-api-key
+                key: api-key
+              githubTokenSecretRef:
+                name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
+                namespace: cellenza-operator-system
+                key: token
+              model: gpt-4o
+              seed:
+                enabled: true
+              tests:
+                enabled: true
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
@@ -141,7 +163,7 @@ jobs:
               environment: pr-${{ github.event.pull_request.number }}
               commentOnReady: true
               tokenSecretRef:
-                name: ${GITHUB_TOKEN_SECRET}
+                name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
                 namespace: cellenza-operator-system
                 key: token
           EOF

@@ -7,5 +7,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY app.py .
+COPY alembic.ini .
+COPY migrations/ ./migrations/
 EXPOSE 80
 CMD ["python", "app.py"]
