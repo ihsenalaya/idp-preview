@@ -548,6 +548,7 @@ The demo app is a Flask guestbook backed by PostgreSQL.
 ## AI Enrichment
 
 When `spec.aiEnrichment.enabled: true`, the operator automatically generates seed data and integration tests **after the preview environment reaches Running phase**.
+If the `seed` or `tests` blocks are omitted, the operator treats them as enabled by default. Set `enabled: false` explicitly to skip one of the tasks.
 
 ### How it works
 
@@ -581,6 +582,10 @@ spec:
       name: ai-api-key          # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
       key: api-key
     model: gpt-4o-mini          # optional, defaults to gpt-4o-mini
+    seed:
+      enabled: true            # optional, defaults to true when omitted
+    tests:
+      enabled: true            # optional, defaults to true when omitted
 ```
 
 ### Create the API key secret

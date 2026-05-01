@@ -355,19 +355,15 @@ def api_seeded_data():
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == "__main__":
-    init_db()
-    app.run(host="0.0.0.0", port=80)
-# test
-# phase-comments test
-
 @app.route("/ping")
 def ping():
     return "pong", 200
-# test
-# 
-
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({"version": "1.1.0", "feature": "ai-enrichment-test"})
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=80)
