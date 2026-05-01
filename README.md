@@ -695,7 +695,7 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
 | Cellenza Operator | `cellenza-operator-system` | **0.11.1** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
-| Jaeger (all-in-one) | `observability` | 1.67 |
+| Jaeger (all-in-one) | `observability` | 1.67.0 |
 | OTel Collector + Instrumentation | `observability` | 0.148.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
 | Cellenza Extension | `cellenza-operator-system` | **0.11.1** |
