@@ -508,11 +508,41 @@ The Cellenza Extension lets developers manage preview environments directly from
 
 #### `run-sql` examples
 
+**Inspecter la base de données**
 ```
 @cellenza run-sql pr-42 SELECT COUNT(*) FROM products;
 @cellenza run-sql pr-42 SELECT * FROM categories ORDER BY name;
+@cellenza run-sql pr-42 SELECT p.name, p.price, p.stock, p.discount_pct FROM products p ORDER BY p.created_at DESC LIMIT 10;
+@cellenza run-sql pr-42 SELECT p.name, AVG(r.rating) AS avg_rating, COUNT(r.id) AS nb_reviews FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name ORDER BY avg_rating DESC;
+@cellenza run-sql pr-42 SELECT status, COUNT(*) FROM orders GROUP BY status;
+```
+
+**Modifier le schéma**
+```
+@cellenza run-sql pr-42 ALTER TABLE products ADD COLUMN featured BOOLEAN DEFAULT false;
+@cellenza run-sql pr-42 ALTER TABLE products ADD COLUMN tags TEXT[];
+@cellenza run-sql pr-42 ALTER TABLE orders ADD COLUMN shipping_address TEXT;
+```
+
+**Insérer des données de test**
+```
 @cellenza run-sql pr-42 INSERT INTO categories (name, slug) VALUES ('Promo', 'promo');
-@cellenza run-sql pr-42 UPDATE products SET discount_pct=25 WHERE stock > 10;
+@cellenza run-sql pr-42 INSERT INTO products (name, price, stock, discount_pct) VALUES ('Test Product', 29.99, 50, 10);
+@cellenza run-sql pr-42 INSERT INTO reviews (product_id, author, rating, comment) VALUES (1, 'Alice', 5, 'Excellent!');
+```
+
+**Mettre à jour des données**
+```
+@cellenza run-sql pr-42 UPDATE products SET featured = true WHERE discount_pct > 20;
+@cellenza run-sql pr-42 UPDATE products SET stock = stock + 100 WHERE stock < 10;
+@cellenza run-sql pr-42 UPDATE orders SET status = 'shipped' WHERE status = 'pending';
+```
+
+**Nettoyer / réinitialiser**
+```
+@cellenza run-sql pr-42 TRUNCATE orders RESTART IDENTITY CASCADE;
+@cellenza run-sql pr-42 DELETE FROM products WHERE stock = 0;
+@cellenza run-sql pr-42 DELETE FROM reviews WHERE rating = 1;
 ```
 
 The command creates a `psql` Job in the preview namespace connected to the preview database via the `postgres-credentials` secret. Results are available with `kubectl logs -n preview-pr-42 job/<job-name>`.

@@ -680,9 +680,37 @@ def api_discounted_products():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/products/<int:product_id>/related", methods=["GET"])
+def api_related_products(product_id):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT category_id FROM products WHERE id = %s", (product_id,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Product not found"}), 404
+        category_id = row[0]
+        cur.execute("""
+            SELECT p.id, p.name, p.price, p.stock, p.discount_pct,
+                   ROUND(p.price * (1 - p.discount_pct / 100), 2) AS discounted_price
+            FROM products p
+            WHERE p.category_id = %s AND p.id != %s AND p.stock > 0
+            ORDER BY p.created_at DESC
+            LIMIT 5
+        """, (category_id, product_id))
+        products = fetch_all_dicts(cur)
+        for p in products:
+            p["price"]            = float(p["price"])
+            p["discount_pct"]     = float(p["discount_pct"] or 0)
+            p["discounted_price"] = float(p["discounted_price"] or p["price"])
+        cur.close(); conn.close()
+        return jsonify({"products": products, "count": len(products)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({"version": "2.1.0", "feature": "product-catalogue"})
+    return jsonify({"version": "2.2.0", "feature": "product-catalogue"})
 
 
 if __name__ == "__main__":
