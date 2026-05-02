@@ -95,7 +95,7 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.11.4 \
+  --version 0.11.8 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -500,7 +500,22 @@ The Cellenza Extension lets developers manage preview environments directly from
 | `@cellenza extend pr-42 24h` | Extend TTL immediately |
 | `@cellenza wake pr-42` | Restart a scaled-down environment |
 | `@cellenza reset-db pr-42` | Delete + re-run migration and seed |
+| `@cellenza run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview database |
+| `@cellenza enrich pr-42` | Re-run AI seed and test generation |
+| `@cellenza set-prompt pr-42 <instructions>` | Set custom AI instructions for this environment |
+| `@cellenza show-prompt pr-42` | Show the current AI prompt |
 | `@cellenza help` | Show all commands |
+
+#### `run-sql` examples
+
+```
+@cellenza run-sql pr-42 SELECT COUNT(*) FROM products;
+@cellenza run-sql pr-42 SELECT * FROM categories ORDER BY name;
+@cellenza run-sql pr-42 INSERT INTO categories (name, slug) VALUES ('Promo', 'promo');
+@cellenza run-sql pr-42 UPDATE products SET discount_pct=25 WHERE stock > 10;
+```
+
+The command creates a `psql` Job in the preview namespace connected to the preview database via the `postgres-credentials` secret. Results are available with `kubectl logs -n preview-pr-42 job/<job-name>`.
 
 ### Deploy
 
@@ -509,6 +524,24 @@ kubectl apply -f config/extension/rbac.yaml
 kubectl apply -f config/extension/deployment.yaml
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension --timeout=60s
 ```
+
+### Upgrade the operator
+
+To upgrade to a new version of the Cellenza Operator (e.g. `0.11.8`):
+
+```bash
+helm upgrade cellenza-operator \
+  oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
+  --version 0.11.8 \
+  --namespace cellenza-operator-system
+
+kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
+```
+
+> If the CRD schema changed, apply the updated CRD manually first:
+> ```bash
+> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.11.8/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
+> ```
 
 ### Expose for local Kind (ngrok)
 
@@ -659,7 +692,10 @@ kubectl create secret generic ai-api-key \
 kubectl create secret generic ai-api-key \
   --from-literal=api-key=<GITHUB_TOKEN> \
   -n cellenza-operator-system
-# Also set AI_API_URL=https://models.inference.ai.azure.com in operator env
+
+kubectl set env deployment/cellenza-operator \
+  AI_API_URL=https://models.inference.ai.azure.com \
+  -n cellenza-operator-system
 ```
 
 ### Trigger manually
@@ -713,9 +749,9 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|
 | cert-manager | `cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | **0.11.4** |
+| Cellenza Operator | `cellenza-operator-system` | **0.11.8** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | 1.67.0 |
-| OTel Collector + Instrumentation | `observability` | 0.148.0 |
+| OTel Collector + Instrumentation | `observability` | 0.149.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | **0.11.4** |
+| Cellenza Extension | `cellenza-operator-system` | **0.11.8** |

@@ -655,9 +655,34 @@ def api_seeded_data():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/products/discounted", methods=["GET"])
+def api_discounted_products():
+    try:
+        min_discount = request.args.get("min_discount", 0, type=float)
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT p.id, p.name, p.description, p.price, p.stock, p.discount_pct,
+                   ROUND(p.price * (1 - p.discount_pct / 100), 2) AS discounted_price,
+                   c.name AS category_name
+            FROM products p
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE p.discount_pct >= %s AND p.stock > 0
+            ORDER BY p.discount_pct DESC
+        """, (min_discount,))
+        products = fetch_all_dicts(cur)
+        for p in products:
+            p["price"]            = float(p["price"])
+            p["discount_pct"]     = float(p["discount_pct"] or 0)
+            p["discounted_price"] = float(p["discounted_price"] or p["price"])
+        cur.close(); conn.close()
+        return jsonify({"products": products, "count": len(products)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({"version": "2.0.0", "feature": "product-catalogue"})
+    return jsonify({"version": "2.1.0", "feature": "product-catalogue"})
 
 
 if __name__ == "__main__":
