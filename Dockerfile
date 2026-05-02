@@ -9,5 +9,6 @@ COPY --from=builder /install /usr/local
 COPY app.py .
 COPY alembic.ini .
 COPY migrations/ ./migrations/
+COPY tests/ ./tests/
 EXPOSE 80
 CMD ["python", "app.py"]

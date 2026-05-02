@@ -95,7 +95,7 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.11.8 \
+  --version 0.12.0 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -460,6 +460,86 @@ spec:
 
 ---
 
+## Automated Test Suite
+
+The Cellenza operator runs **three types of tests in parallel** after each preview environment is ready. Results appear as a dedicated PR comment.
+
+### Test flow
+
+```
+Environment Running
+       │
+       ├── smoke-tests     (built-in, operator-managed)
+       ├── regression-tests (app image: /app/tests/regression.py)
+       └── e2e-tests        (app image: /app/tests/e2e.py)
+                │
+                ▼
+       PR comment with pass/fail table
+```
+
+### What each test type validates
+
+| Type | What it tests | Why here vs CI |
+|------|--------------|----------------|
+| **Smoke** | `/health` + `/api/products` respond | Verifies the deployment itself succeeded |
+| **Regression** | All existing endpoints return expected status + structure | Catches regressions on a real DB, not mocked |
+| **E2E** | Complete user flows (browse → detail → related, discount filter) | Tests interactions between components on a real environment |
+
+### Apport du controller vs environnement de test classique
+
+Dans un environnement de staging partagé classique, exécuter des tests de régression et E2E présente deux problèmes majeurs : la **pollution entre PRs** (deux PRs qui tournent simultanément se mélangent dans la même base de données) et les **données instables** (le staging contient des données accumulées de tests précédents).
+
+Le controller Cellenza résout les deux :
+
+- **Isolation complète** : chaque PR a son propre namespace, sa propre base de données, ses propres credentials. Les tests de la PR #28 n'interfèrent jamais avec ceux de la PR #29.
+- **Données fraîches** : chaque environnement démarre avec une base vide, puis le seed AI injecte des données contextuelles à la PR. Les tests de régression et E2E tournent sur un état de données propre et prévisible.
+- **Environnement réel** : contrairement aux tests CI avec DB mockée, les jobs tournent contre un vrai PostgreSQL déployé, avec la vraie migration appliquée.
+
+### Enabling the test suite
+
+Add `testSuite.enabled: true` to your Cellenza CR:
+
+```yaml
+spec:
+  testSuite:
+    enabled: true
+    smoke: {}           # no config needed — built into the operator
+    regression:
+      enabled: true     # runs /app/tests/regression.py using the app image
+    e2e:
+      enabled: true     # runs /app/tests/e2e.py using the app image
+```
+
+The `tests/` folder is already included in this repo's Docker image.
+
+### Reading results
+
+```bash
+# Summary
+kubectl get cz pr-42 -o jsonpath='{.status.tests}' | jq .
+
+# Per-suite details
+kubectl get cz pr-42 -o jsonpath='{.status.tests.smoke}'
+kubectl get cz pr-42 -o jsonpath='{.status.tests.regression}'
+kubectl get cz pr-42 -o jsonpath='{.status.tests.e2e}'
+```
+
+### PR comment produced automatically
+
+```
+## Cellenza Test Suite Results
+
+**Overall: ✅ Succeeded**
+
+| Suite      | Status       | Passed | Failed |
+|------------|--------------|--------|--------|
+| Smoke      | ✅ Succeeded | 2      | 0      |
+| Regression | ✅ Succeeded | 8      | 0      |
+| E2E        | ✅ Succeeded | 4      | 0      |
+```
+
+---
+
 ## Accessing the preview
 
 ### Port-forward ingress (required for Kind)
@@ -557,12 +637,12 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 
 ### Upgrade the operator
 
-To upgrade to a new version of the Cellenza Operator (e.g. `0.11.8`):
+To upgrade to a new version of the Cellenza Operator (e.g. `0.12.0`):
 
 ```bash
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.11.8 \
+  --version 0.12.0 \
   --namespace cellenza-operator-system
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
@@ -570,7 +650,7 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator 
 
 > If the CRD schema changed, apply the updated CRD manually first:
 > ```bash
-> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.11.8/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
+> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.12.0/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
 > ```
 
 ### Expose for local Kind (ngrok)
@@ -779,9 +859,9 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|
 | cert-manager | `cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | **0.11.8** |
+| Cellenza Operator | `cellenza-operator-system` | **0.12.0** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | 1.67.0 |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | **0.11.8** |
+| Cellenza Extension | `cellenza-operator-system` | **0.12.0** |
