@@ -11,6 +11,7 @@ BASE = os.environ.get("APP_URL", "http://app:80")
 
 tests = [
     # (name, method, path, expected_status, extra_check)
+    ("homepage_html", "GET", "/", 200, lambda r: "Cellenza" in r.text and "Catalogue" in r.text),
     ("health", "GET", "/health", 200, None),
     ("products_list", "GET", "/api/products", 200, lambda r: isinstance(r.json(), list)),
     ("product_detail", "GET", "/api/products/1", 200, lambda r: "id" in r.json()),

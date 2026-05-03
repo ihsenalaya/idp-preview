@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request, redirect, jsonify, render_template
 
 app = Flask(__name__)
 
@@ -324,10 +324,38 @@ def index():
             "total_products": total_p, "total_reviews": total_r, "total_orders": total_o,
             "products": all_products,  "categories": cat_names,
         }
-        return render_page(True, pg_version, products, categories, ai_data=ai_data)
+        env = {k: os.environ.get(k, "—") for k in
+               ("POSTGRES_USER", "POSTGRES_DB", "PREVIEW_BRANCH", "PREVIEW_PR", "ENVIRONMENT")}
+        return render_template(
+            "catalog.html",
+            db_ok=True,
+            pg_version=pg_version,
+            products=products,
+            categories=categories,
+            ai_data=ai_data,
+            ai_model=os.environ.get("AI_MODEL", "gpt-4o"),
+            env=env,
+            pr_number=os.environ.get("PREVIEW_PR", ""),
+            branch=os.environ.get("PREVIEW_BRANCH", "main"),
+            error="",
+        )
     except Exception as e:
         log("Query failed", error=str(e))
-        return render_page(False, "n/a", [], [], error=str(e)), 500
+        env = {k: os.environ.get(k, "—") for k in
+               ("POSTGRES_USER", "POSTGRES_DB", "PREVIEW_BRANCH", "PREVIEW_PR", "ENVIRONMENT")}
+        return render_template(
+            "catalog.html",
+            db_ok=False,
+            pg_version="n/a",
+            products=[],
+            categories=[],
+            ai_data=None,
+            ai_model="",
+            env=env,
+            pr_number=os.environ.get("PREVIEW_PR", ""),
+            branch=os.environ.get("PREVIEW_BRANCH", "main"),
+            error=str(e),
+        ), 500
 
 
 @app.route("/add-product", methods=["POST"])
@@ -710,7 +738,7 @@ def api_related_products(product_id):
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({"version": "2.2.0", "feature": "product-catalogue"})
+    return jsonify({"version": "3.0.0", "feature": "frontend-with-e2e"})
 
 
 if __name__ == "__main__":

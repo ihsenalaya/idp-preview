@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cellenza — Catalogue{% if pr_number %} · PR #{{ pr_number }}{% endif %}</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,sans-serif;background:#f1f5f9;color:#1e293b}
+
+    /* Preview banner */
+    .preview-banner{background:linear-gradient(135deg,#6d28d9,#4f46e5);color:#fff;
+      padding:.6rem 2rem;font-size:.82rem;display:flex;align-items:center;gap:.75rem}
+    .preview-banner .pr-pill{background:rgba(255,255,255,.2);border-radius:999px;
+      padding:.15rem .65rem;font-weight:700}
+    .preview-banner .branch{opacity:.85;font-family:monospace}
+
+    header{background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:1.5rem 2rem;
+      display:flex;justify-content:space-between;align-items:center}
+    header h1{font-size:1.4rem}
+    header p{font-size:.85rem;opacity:.65;margin-top:.2rem}
+    .badge{display:inline-block;background:var(--sc,#22c55e);color:#fff;padding:.2rem .65rem;
+      border-radius:999px;font-size:.75rem;font-weight:700;letter-spacing:.5px}
+    .ai-badge{background:#7c3aed;color:#fff;padding:.2rem .65rem;border-radius:999px;
+      font-size:.75rem;font-weight:700;margin-right:.5rem}
+    .container{max-width:1060px;margin:2rem auto;padding:0 1rem;display:grid;gap:1.25rem}
+    .card{background:#fff;border-radius:10px;padding:1.5rem;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+    .ai-card{border-left:4px solid #7c3aed}
+    .card h2{font-size:.85rem;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-bottom:1rem}
+    .ai-meta{font-size:.82rem;color:#64748b;margin-bottom:.75rem;line-height:1.6}
+    .db-info{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+    .version{font-family:monospace;font-size:.82rem;color:#64748b}
+    .error{color:#ef4444;font-size:.82rem;margin-top:.5rem;font-family:monospace}
+    .env-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.5rem;margin-top:1rem}
+    .env-item{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:.5rem .75rem;font-size:.8rem}
+    .env-item .key{display:block;font-family:monospace;color:#7c3aed;font-weight:700;margin-bottom:.15rem}
+    .chips{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.85rem}
+    .chip{background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;border-radius:999px;
+      padding:.15rem .6rem;font-size:.78rem}
+    .table-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse;margin-top:.5rem}
+    thead th{text-align:left;padding:.5rem .6rem;font-size:.73rem;font-weight:700;
+      text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;border-bottom:2px solid #f1f5f9}
+    tbody td{padding:.6rem .6rem;border-bottom:1px solid #f8fafc;font-size:.85rem}
+    tbody tr:hover td{background:#fafafa}
+    .stars-cell{color:#f59e0b;white-space:nowrap}
+
+    /* Filter bar */
+    .filter-bar{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem;
+      background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem}
+    .filter-bar label{font-size:.82rem;font-weight:600;color:#64748b;white-space:nowrap}
+    .filter-bar input[type=number]{width:80px;padding:.4rem .6rem;border:1px solid #e2e8f0;
+      border-radius:6px;font-size:.85rem}
+    .filter-bar button{padding:.45rem 1rem;border:none;border-radius:6px;font-size:.85rem;
+      font-weight:600;cursor:pointer}
+    .btn-primary{background:#7c3aed;color:#fff}
+    .btn-primary:hover{background:#6d28d9}
+    .btn-ghost{background:#e2e8f0;color:#64748b}
+    .btn-ghost:hover{background:#cbd5e1}
+    .product-count{margin-left:auto;font-size:.8rem;color:#94a3b8}
+
+    /* Product grid */
+    .prod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-top:1rem}
+    .prod-card{border:1px solid #e2e8f0;border-radius:8px;padding:1rem;background:#fafafa;
+      display:flex;flex-direction:column;gap:.4rem;cursor:pointer;transition:box-shadow .15s,transform .15s}
+    .prod-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1);transform:translateY(-2px)}
+    .prod-cat{font-size:.7rem;text-transform:uppercase;color:#7c3aed;font-weight:700}
+    .prod-name{font-weight:700;font-size:.95rem}
+    .prod-desc{font-size:.8rem;color:#64748b;flex:1}
+    .prod-foot{display:flex;justify-content:space-between;align-items:center;margin-top:.4rem;flex-wrap:wrap;gap:.3rem}
+    .prod-price{font-weight:700}
+    .disc-badge{background:#fef9c3;color:#854d0e;border-radius:4px;padding:.1rem .35rem;font-size:.7rem;margin-left:.3rem}
+    .disc-badge.high{background:#dcfce7;color:#166534}
+    .stock-badge{color:#fff;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap}
+    .stars{font-size:.82rem;color:#f59e0b}
+    .rev-count{color:#94a3b8;font-size:.75rem}
+    .empty{color:#cbd5e1;font-style:italic;font-size:.88rem;padding:1rem 0}
+
+    /* Add product form */
+    form{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem}
+    input,select,textarea{flex:1;min-width:120px;padding:.5rem .75rem;border:1px solid #e2e8f0;
+      border-radius:6px;font-size:.88rem;outline:none;transition:border-color .2s;font-family:inherit}
+    input:focus,select:focus{border-color:#7c3aed}
+    button{background:#7c3aed;color:#fff;border:none;cursor:pointer;padding:.55rem 1.2rem;
+      border-radius:6px;font-weight:700;font-size:.88rem;transition:background .2s;white-space:nowrap}
+    button:hover{background:#6d28d9}
+
+    /* Detail overlay */
+    .detail-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;
+      justify-content:flex-end}
+    .detail-overlay.open{display:flex}
+    .detail-panel{background:#fff;width:min(500px,100%);height:100vh;overflow-y:auto;
+      padding:2rem;box-shadow:-4px 0 24px rgba(0,0,0,.12);animation:slideIn .25s ease}
+    @keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+    .detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem}
+    .close-btn{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;
+      padding:.4rem .9rem;cursor:pointer;font-size:.85rem;color:#64748b}
+    .close-btn:hover{background:#e2e8f0}
+    .detail-name{font-size:1.4rem;font-weight:700;margin-bottom:.5rem}
+    .detail-price{font-size:1.8rem;font-weight:700;color:#7c3aed;margin-bottom:1rem}
+    .detail-desc{color:#64748b;line-height:1.6;font-size:.9rem;margin-bottom:1.5rem}
+    .detail-section{margin-bottom:1.5rem}
+    .detail-section h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.8px;
+      color:#94a3b8;font-weight:700;margin-bottom:.75rem}
+    .related-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    .related-card{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;
+      padding:.75rem;cursor:pointer}
+    .related-card:hover{background:#f1f5f9}
+    .related-card .r-name{font-weight:600;font-size:.88rem;margin-bottom:.25rem}
+    .related-card .r-price{color:#7c3aed;font-weight:700;font-size:.88rem}
+    .no-related{color:#cbd5e1;font-size:.85rem;font-style:italic}
+    footer{text-align:center;color:#94a3b8;font-size:.78rem;padding:2rem}
+  </style>
+</head>
+<body>
+
+{% if pr_number %}
+<div class="preview-banner" data-testid="preview-badge">
+  <span class="pr-pill">Preview</span>
+  <span>PR #{{ pr_number }}</span>
+  <span style="opacity:.5">|</span>
+  <span class="branch">{{ branch }}</span>
+</div>
+{% endif %}
+
+<header>
+  <div>
+    <h1>🛒 Cellenza — Catalogue Demo</h1>
+    <p>Preview environment · PostgreSQL · OpenTelemetry · AI Enrichment · Test Suite</p>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- PostgreSQL status -->
+  <div class="card">
+    <h2>Statut PostgreSQL</h2>
+    <div class="db-info">
+      <span class="badge" style="--sc:{{ '#22c55e' if db_ok else '#ef4444' }}">{{ 'Connecté' if db_ok else 'Erreur' }}</span>
+      <span class="version">{{ pg_version }}</span>
+    </div>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="env-grid">
+      {% for key in ['POSTGRES_USER','POSTGRES_DB','PREVIEW_BRANCH','PREVIEW_PR','ENVIRONMENT'] %}
+      <div class="env-item"><span class="key">{{ key }}</span>{{ env.get(key, '—') }}</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- AI enrichment -->
+  {% if ai_data and ai_data.products %}
+  <div class="card ai-card">
+    <h2><span class="ai-badge">🤖 AI</span> Catalogue généré par enrichissement IA</h2>
+    <p class="ai-meta">
+      Données seed générées par <strong>{{ ai_model }}</strong> à partir du diff de la PR
+      et du schéma PostgreSQL. &nbsp;·&nbsp;
+      <strong>{{ ai_data.total_products }}</strong> produit(s) &nbsp;·&nbsp;
+      <strong>{{ ai_data.total_reviews }}</strong> avis &nbsp;·&nbsp;
+      <strong>{{ ai_data.total_orders }}</strong> commande(s)
+    </p>
+    <div class="chips">
+      {% for c in ai_data.categories %}<span class="chip">{{ c }}</span>{% endfor %}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Produit</th><th>Catégorie</th><th>Prix</th><th>Remise</th><th>Stock</th><th>Note</th></tr></thead>
+        <tbody>
+          {% for p in ai_data.products %}
+          <tr>
+            <td>{{ p.id }}</td>
+            <td><strong>{{ p.name }}</strong></td>
+            <td>{{ p.category_name or '—' }}</td>
+            <td>{{ '%.2f'|format(p.price|float) }} €</td>
+            <td>{% if p.discount_pct %}-{{ p.discount_pct|int }}%{% else %}—{% endif %}</td>
+            <td>{{ p.stock }}</td>
+            <td class="stars-cell">{% if p.avg_rating %}{{ p.avg_rating }}★ ({{ p.review_count }}){% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Product catalogue -->
+  <div class="card">
+    <h2>Catalogue produits</h2>
+
+    <div class="filter-bar">
+      <label for="discount-input">Remise minimum (%)</label>
+      <input type="number" id="discount-input" data-testid="discount-input"
+             min="0" max="100" value="0" placeholder="0">
+      <button class="btn-primary" data-testid="discount-apply" onclick="applyFilter()">Filtrer</button>
+      <button class="btn-ghost" onclick="clearFilter()">Effacer</button>
+      <span class="product-count" id="product-count" data-testid="product-count"></span>
+    </div>
+
+    <div class="prod-grid" id="prod-grid" data-testid="product-grid">
+      {% if products %}
+        {% for p in products %}
+        {% set disc = p.discount_pct|float %}
+        {% set final = p.price|float * (1 - disc / 100) %}
+        <div class="prod-card" data-testid="product-card" data-product-id="{{ p.id }}"
+             onclick="openDetail({{ p.id }})">
+          <div class="prod-cat">{{ p.category_name or 'Non classé' }}</div>
+          <div class="prod-name" data-testid="product-name">{{ p.name }}</div>
+          <div class="prod-desc">{{ p.description or '' }}</div>
+          <div class="prod-foot">
+            <span class="prod-price" data-testid="product-price">{{ '%.2f'|format(final) }} €
+              {% if disc %}<span class="disc-badge {{ 'high' if disc >= 30 else '' }}" data-testid="product-discount">-{{ disc|int }}%</span>{% endif %}
+            </span>
+            <span class="stock-badge"
+              style="background:{{ '#22c55e' if p.stock > 10 else ('#f59e0b' if p.stock > 0 else '#ef4444') }}">
+              Stock {{ p.stock }}</span>
+          </div>
+          {% if p.avg_rating %}
+          <div class="stars">{{ p.avg_rating }}★ <span class="rev-count">({{ p.review_count }} avis)</span></div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">Aucun produit — ajoutez-en un ou attendez que l'IA enrichisse la preview.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Add product form -->
+  <div class="card">
+    <h2>Ajouter un produit</h2>
+    <form method="POST" action="/add-product">
+      <input type="text"   name="name"        placeholder="Nom du produit *" required>
+      <select name="category_id">
+        <option value="">— Sans catégorie —</option>
+        {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+      </select>
+      <input type="number" name="price"        placeholder="Prix € *" step="0.01" min="0" required>
+      <input type="number" name="stock"        placeholder="Stock" min="0" value="10">
+      <input type="number" name="discount_pct" placeholder="Remise %" min="0" max="100">
+      <input type="text"   name="description"  placeholder="Description">
+      <button type="submit">Ajouter</button>
+    </form>
+  </div>
+
+</div>
+
+<footer>Managed by <a href="https://github.com/ihsenalaya/cellenza-operator" style="color:#7c3aed">Cellenza Operator</a> · v3.0.0</footer>
+
+<!-- Product detail panel -->
+<div class="detail-overlay" id="detail-overlay" data-testid="detail-overlay">
+  <div class="detail-panel" data-testid="product-detail" id="detail-panel">
+    <div class="detail-header">
+      <span style="font-size:.85rem;color:#94a3b8">Détail produit</span>
+      <button class="close-btn" data-testid="close-detail" onclick="closeDetail()">✕ Fermer</button>
+    </div>
+    <div id="detail-content">
+      <div style="text-align:center;padding:3rem;color:#94a3b8">Chargement…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Refresh count badge
+  function updateCount(n) {
+    const el = document.getElementById('product-count');
+    if (el) el.textContent = n + ' produit' + (n !== 1 ? 's' : '');
+  }
+
+  // Init count from server-rendered cards
+  updateCount(document.querySelectorAll('[data-testid="product-card"]').length);
+
+  // Discount filter — fetches via API, re-renders grid client-side
+  async function applyFilter() {
+    const min = parseInt(document.getElementById('discount-input').value) || 0;
+    const url = min > 0 ? `/api/products/discounted?min_discount=${min}` : '/api/products';
+    const grid = document.getElementById('prod-grid');
+    grid.innerHTML = '<p class="empty" style="grid-column:1/-1">Chargement…</p>';
+    try {
+      const resp = await fetch(url);
+      const products = await resp.json();
+      const list = Array.isArray(products) ? products : (products.products || []);
+      renderGrid(list);
+    } catch(e) {
+      grid.innerHTML = `<p class="empty" style="color:#ef4444">Erreur: ${e.message}</p>`;
+    }
+  }
+
+  function clearFilter() {
+    document.getElementById('discount-input').value = 0;
+    applyFilter();
+  }
+
+  function renderGrid(products) {
+    const grid = document.getElementById('prod-grid');
+    updateCount(products.length);
+    if (!products.length) {
+      grid.innerHTML = '<p class="empty" style="grid-column:1/-1">Aucun produit ne correspond au filtre.</p>';
+      return;
+    }
+    grid.innerHTML = products.map(p => {
+      const disc = parseFloat(p.discount_pct || p.discount || 0);
+      const price = parseFloat(p.price || 0);
+      const final = price * (1 - disc / 100);
+      const discBadge = disc > 0
+        ? `<span class="disc-badge ${disc >= 30 ? 'high' : ''}" data-testid="product-discount">-${Math.round(disc)}%</span>`
+        : '';
+      return `<div class="prod-card" data-testid="product-card" data-product-id="${p.id}" onclick="openDetail(${p.id})">
+        <div class="prod-cat">${p.category_name || 'Non classé'}</div>
+        <div class="prod-name" data-testid="product-name">${p.name}</div>
+        <div class="prod-desc">${p.description || ''}</div>
+        <div class="prod-foot">
+          <span class="prod-price" data-testid="product-price">${final.toFixed(2)} € ${discBadge}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // Product detail panel
+  async function openDetail(id) {
+    const overlay = document.getElementById('detail-overlay');
+    const content = document.getElementById('detail-content');
+    overlay.classList.add('open');
+    content.innerHTML = '<div style="text-align:center;padding:3rem;color:#94a3b8">Chargement…</div>';
+    try {
+      const [pResp, rResp] = await Promise.all([
+        fetch(`/api/products/${id}`),
+        fetch(`/api/products/${id}/related`),
+      ]);
+      const product = await pResp.json();
+      const related = await rResp.json();
+      const disc = parseFloat(product.discount_pct || 0);
+      const price = parseFloat(product.price || 0);
+      const final = price * (1 - disc / 100);
+      const discBadge = disc > 0
+        ? `<span class="disc-badge ${disc >= 30 ? 'high' : ''}">${Math.round(disc)}% de remise</span><br><br>`
+        : '';
+      const relatedHTML = Array.isArray(related) && related.length
+        ? `<div class="related-grid">${related.map(r =>
+            `<div class="related-card" data-testid="related-card" onclick="openDetail(${r.id})">
+              <div class="r-name">${r.name}</div>
+              <div class="r-price">${parseFloat(r.price).toFixed(2)} €</div>
+            </div>`).join('')}</div>`
+        : '<p class="no-related">Aucun produit lié.</p>';
+
+      content.innerHTML = `
+        <div class="detail-name" data-testid="detail-name">${product.name}</div>
+        <div class="detail-price" data-testid="detail-price">${final.toFixed(2)} €</div>
+        ${discBadge}
+        ${product.description ? `<p class="detail-desc">${product.description}</p>` : ''}
+        <div class="detail-section" data-testid="related-section">
+          <h3>Produits liés</h3>
+          ${relatedHTML}
+        </div>`;
+    } catch(e) {
+      content.innerHTML = `<p style="color:#ef4444">Erreur: ${e.message}</p>`;
+    }
+  }
+
+  function closeDetail() {
+    document.getElementById('detail-overlay').classList.remove('open');
+  }
+
+  // Close on backdrop click
+  document.getElementById('detail-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeDetail();
+  });
+</script>
+</body>
+</html>
