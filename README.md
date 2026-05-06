@@ -95,7 +95,7 @@ kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --ti
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.12.0 \
+  --version 0.12.8 \
   --namespace cellenza-operator-system \
   --create-namespace
 
@@ -344,6 +344,7 @@ spec:
       enabled: true           # runs ai-seed Job: psql seed.sql against the preview DB
     tests:
       enabled: true           # runs ai-tests Job: python test.py with APP_URL=http://app:80
+    # rerunRequested: true    # set by @cellenza retest-ai — operator replays the AI-only cycle
 ```
 
 ### Environment variables injected automatically
@@ -406,7 +407,7 @@ kubectl get cz pr-42 -o jsonpath='{.status}' | jq .
   "aiEnrichment": {
     "phase": "Succeeded",
     "seedStatus": "Succeeded",
-    "testStatus": "Succeeded",
+    "testsStatus": "Succeeded",
     "testResults": ["PASS: test_health", "PASS: test_create_product", "PASS: test_stats"],
     "completedAt": "2026-05-01T12:00:00Z"
   }
@@ -581,10 +582,14 @@ The Cellenza Extension lets developers manage preview environments directly from
 | `@cellenza wake pr-42` | Restart a scaled-down environment |
 | `@cellenza reset-db pr-42` | Delete + re-run migration and seed |
 | `@cellenza run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview database |
-| `@cellenza enrich pr-42` | Re-run AI seed and test generation |
+| `@cellenza retest-ai pr-42` | Trigger an operator-managed AI-only rerun |
+| `@cellenza enrich pr-42` | Backward-compatible alias for `@cellenza retest-ai pr-42` |
 | `@cellenza set-prompt pr-42 <instructions>` | Set custom AI instructions for this environment |
 | `@cellenza show-prompt pr-42` | Show the current AI prompt |
 | `@cellenza help` | Show all commands |
+
+Use `@cellenza retest-ai` when only the operator, the AI prompt, or AI generation settings changed.
+The operator deletes AI artifacts, replays DB migration/seed when enabled, skips the standard smoke/regression/E2E suite for that cycle, then regenerates `seed.sql` and `test.py`.
 
 #### `run-sql` examples
 
@@ -637,12 +642,12 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 
 ### Upgrade the operator
 
-To upgrade to a new version of the Cellenza Operator (e.g. `0.12.0`):
+To upgrade to a new version of the Cellenza Operator (e.g. `0.12.8`):
 
 ```bash
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.12.0 \
+  --version 0.12.8 \
   --namespace cellenza-operator-system
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
@@ -650,7 +655,7 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator 
 
 > If the CRD schema changed, apply the updated CRD manually first:
 > ```bash
-> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.12.0/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
+> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.12.8/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
 > ```
 
 ### Expose for local Kind (ngrok)
@@ -812,11 +817,19 @@ kubectl set env deployment/cellenza-operator \
 
 ```bash
 # Re-run AI enrichment on an existing environment
-@cellenza enrich pr-42
+@cellenza retest-ai pr-42
 # or via kubectl
-kubectl patch cz pr-42 --type=json \
-  -p='[{"op":"remove","path":"/status/aiEnrichment"}]'
+kubectl patch cz pr-42 --type=merge \
+  -p='{"spec":{"aiEnrichment":{"rerunRequested":true}}}'
 ```
+
+`@cellenza enrich pr-42` remains available as an alias, but `retest-ai` is the preferred command.
+This AI-only rerun path is the right choice when testing a new operator image or a prompt change, because it does not require rerunning the full `preview.yaml` workflow.
+
+### Prompt configuration
+
+- Global prompt: managed by the operator Helm chart via `ai.systemPrompt` or `--set-file ai.systemPrompt=...`
+- Per-preview override: `@cellenza set-prompt pr-42 <instructions>`, then `@cellenza retest-ai pr-42`
 
 ### Test format (tests/example_test.py)
 
@@ -859,9 +872,9 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|
 | cert-manager | `cert-manager` | v1.20.2 |
 | ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | **0.12.0** |
+| Cellenza Operator | `cellenza-operator-system` | **0.12.8** |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
 | Jaeger (all-in-one) | `observability` | 1.67.0 |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | **0.12.0** |
+| Cellenza Extension | `cellenza-operator-system` | **0.12.8** |
