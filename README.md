@@ -49,6 +49,19 @@ PR closed → cleanup.yaml → kubectl delete Cellenza → finalizer teardown
 
 ---
 
+## Step 0 — Add Helm repositories
+
+Run this once before any install step. This avoids "chart not found" errors caused by stale or missing repo indexes.
+
+```bash
+helm repo add jetstack       https://charts.jetstack.io
+helm repo add ingress-nginx  https://kubernetes.github.io/ingress-nginx
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo update
+```
+
+---
+
 ## Step 1 — Create the Kind cluster
 
 ```bash
@@ -63,12 +76,12 @@ kubectl get nodes
 ## Step 2 — Install cert-manager
 
 ```bash
-helm install cert-manager cert-manager \
-  --repo https://charts.jetstack.io \
+helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --create-namespace \
   --version v1.20.2 \
-  --set crds.enabled=true
+  --set crds.enabled=true \
+  --wait
 
 kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
 kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
@@ -78,26 +91,32 @@ kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout
 
 ## Step 3 — Install ingress-nginx
 
+> Do not pin a specific version — older pinned versions (e.g. `4.15.1`) are removed from the repo index over time.
+
 ```bash
-helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --repo https://kubernetes.github.io/ingress-nginx \
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace \
-  --version 4.15.1
+  --wait
 
 kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 ```
 
+**WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the preview](#accessing-the-preview)).
+
 ---
 
 ## Step 4 — Install the Cellenza Operator
+
+The chart is published as an OCI artifact on GHCR (public, no login required).
 
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
   --version 0.12.8 \
   --namespace cellenza-operator-system \
-  --create-namespace
+  --create-namespace \
+  --wait
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
 kubectl get crd cellenzas.platform.company.io
@@ -107,14 +126,15 @@ kubectl get crd cellenzas.platform.company.io
 
 ## Step 5 — Install OpenTelemetry Operator
 
+> Do not pin a specific version — `0.110.0` is no longer in the repo index.
+
 ```bash
 helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
-  --repo https://open-telemetry.github.io/opentelemetry-helm-charts \
   --namespace opentelemetry-operator-system \
   --create-namespace \
-  --version 0.110.0 \
   --set admissionWebhooks.certManager.enabled=true \
-  --set manager.collectorImage.repository=otel/opentelemetry-collector-contrib
+  --set manager.collectorImage.repository=otel/opentelemetry-collector-contrib \
+  --wait
 
 kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry-operator --timeout=120s
 ```
@@ -230,26 +250,73 @@ spec:
 
 ```bash
 kubectl apply -f runner.yaml
-kubectl -n github-runner rollout status deployment/github-runner --timeout=60s
+kubectl -n github-runner rollout status deployment/github-runner --timeout=120s
 kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected last line: "Listening for Jobs"
 ```
 
-### 7.3 Create the long-lived GitHub token secret for the workflow
+> **Note:** The image `myoung34/github-runner:latest` is ~1 GB. The first pull can take several minutes inside a Kind cluster. If the rollout times out, wait and re-run the rollout status command.
 
-The preview workflow uses a repository or organization Actions secret named `CELLENZA_GITHUB_TOKEN`.
-This must be a long-lived GitHub token, not the ephemeral workflow `GITHUB_TOKEN`, because the operator updates GitHub Deployments and fetches PR diffs after the workflow has finished.
+### 7.3 Set the GitHub Actions secret `CELLENZA_GITHUB_TOKEN`
 
-Recommended: store it as an organization Actions secret if multiple repositories reuse the same preview platform.
+The preview workflow uses this secret to authenticate with GHCR (Kaniko push) and to let the operator update GitHub Deployments.
 
-Minimum repository permissions for a fine-grained token:
+```bash
+gh secret set CELLENZA_GITHUB_TOKEN \
+  --repo <YOUR_OWNER>/<YOUR_REPO> \
+  --body "<YOUR_GITHUB_PAT>"
+```
 
-- `Contents`: read
-- `Pull requests`: read
-- `Issues`: write
-- `Deployments`: write
+**This step is mandatory.** Without it, the Kaniko image push to GHCR will hang indefinitely and the workflow will time out.
 
-The workflow materializes that token into the cluster as `Secret/cellenza-github-token` in `cellenza-operator-system`.
+Minimum token permissions (classic PAT or fine-grained):
+
+| Permission | Level |
+|---|---|
+| `write:packages` | Required — Kaniko pushes the image to GHCR |
+| `Contents` | read |
+| `Pull requests` | read |
+| `Issues` | write |
+| `Deployments` | write |
+
+### 7.4 Create cluster secrets
+
+```bash
+# Token used by the operator to update GitHub Deployments and post PR comments
+kubectl create secret generic cellenza-github-token \
+  --namespace cellenza-operator-system \
+  --from-literal=token="<YOUR_GITHUB_PAT>"
+```
+
+---
+
+## Step 7.5 — Configure AI Enrichment (optional)
+
+Skip this step if you do not need AI-generated seed data and tests.
+
+### Using GitHub Models (free tier)
+
+```bash
+kubectl create secret generic ai-api-key \
+  --namespace cellenza-operator-system \
+  --from-literal=api-key="<YOUR_GITHUB_TOKEN>"
+
+kubectl set env deployment/cellenza-operator \
+  AI_API_URL=https://models.inference.ai.azure.com \
+  -n cellenza-operator-system
+
+kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=60s
+```
+
+### Using OpenAI
+
+```bash
+kubectl create secret generic ai-api-key \
+  --namespace cellenza-operator-system \
+  --from-literal=api-key="sk-..."
+```
+
+> No `AI_API_URL` override needed for OpenAI — the operator default points to `https://api.openai.com/v1`.
 
 ---
 
@@ -669,6 +736,33 @@ ngrok http 8090
 ---
 
 ## Troubleshooting
+
+### Kaniko job hangs on image push — `CELLENZA_GITHUB_TOKEN` missing or lacks `write:packages`
+
+Symptom: the workflow times out with `error: timed out waiting for the condition on jobs/kaniko-<run_id>` and `kubectl logs` for the Kaniko pod shows only `Pushing image to ghcr.io/...` with no follow-up.
+
+Cause: the `CELLENZA_GITHUB_TOKEN` GitHub Actions secret is not set, or the token does not have `write:packages` permission.
+
+Fix:
+
+```bash
+# Update the repo secret with a token that has write:packages
+gh secret set CELLENZA_GITHUB_TOKEN \
+  --repo <OWNER>/<REPO> \
+  --body "<YOUR_GITHUB_PAT>"
+
+# Then retrigger the workflow with an empty commit
+git commit --allow-empty -m "ci: retrigger preview"
+git push
+```
+
+### Helm chart version not found
+
+Symptom: `Error: chart "..." version "X.Y.Z" not found`.
+
+Cause: pinned chart versions are removed from remote indexes over time.
+
+Fix: run `helm repo update` and omit `--version` to install the latest available release (Steps 3 and 5).
 
 ### Workflow does not trigger — runner token expired
 
