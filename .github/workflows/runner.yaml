@@ -29,13 +29,6 @@ jobs:
       packages: read
 
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: "3635064"
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - name: Install kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
@@ -92,7 +85,7 @@ jobs:
           kubectl create secret docker-registry ghcr-pull-secret \
             --docker-server=ghcr.io \
             --docker-username='${{ github.repository_owner }}' \
-            --docker-password='${{ steps.app-token.outputs.token }}' \
+            --docker-password='${{ secrets.CELLENZA_GITHUB_TOKEN }}' \
             --namespace=cellenza-operator-system \
             --dry-run=client -o yaml | kubectl apply -f -
 
@@ -108,7 +101,7 @@ jobs:
       - name: Register self-hosted runner
         run: |
           RUNNER_TOKEN=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+            -H "Authorization: Bearer ${{ secrets.CELLENZA_GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token" \
             | jq -r .token)

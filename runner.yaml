@@ -45,16 +45,11 @@ spec:
           env:
             - name: REPO_URL
               value: https://github.com/ihsenalaya/idp-testing
-            - name: APP_ID
+            - name: RUNNER_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: github-app-credentials
-                  key: app-id
-            - name: APP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: github-app-credentials
-                  key: private-key
+                  name: runner-token
+                  key: token
             - name: RUNNER_NAME
               value: kind-cluster-runner
             - name: RUNNER_WORKDIR
@@ -62,7 +57,7 @@ spec:
             - name: LABELS
               value: self-hosted,kind
             - name: EPHEMERAL
-              value: "true"
+              value: "false"
           resources:
             requests:
               cpu: 100m
