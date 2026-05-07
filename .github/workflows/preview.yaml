@@ -142,6 +142,13 @@ jobs:
               autoInstrumentation:
                 language: python
                 instrumentationRef: observability/python
+            testSuite:
+              enabled: true
+              smoke: {}
+              regression:
+                enabled: true
+              e2e:
+                enabled: true
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
