@@ -133,6 +133,22 @@ jobs:
             image: ${IMAGE}
             resourceTier: medium
             ttl: 48h
+            services:
+              - name: backend
+                image: ${IMAGE}
+                port: 8080
+                pathPrefix: /api
+              - name: frontend
+                image: ${IMAGE}
+                port: 3000
+                pathPrefix: /
+                env:
+                  - name: APP_MODE
+                    value: frontend
+                  - name: PREVIEW_PR
+                    value: "${{ github.event.pull_request.number }}"
+                  - name: PREVIEW_BRANCH
+                    value: ${{ github.head_ref }}
             database:
               enabled: true
               databaseName: appdb

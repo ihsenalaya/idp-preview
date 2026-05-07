@@ -7,9 +7,9 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY app.py .
+COPY frontend.py .
 COPY alembic.ini .
 COPY migrations/ ./migrations/
-COPY templates/ ./templates/
 COPY tests/ ./tests/
-EXPOSE 80
-CMD ["python", "app.py"]
+EXPOSE 8080 3000
+CMD ["sh", "-c", "if [ \"$APP_MODE\" = 'frontend' ]; then python frontend.py; else python app.py; fi"]
