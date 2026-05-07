@@ -17,22 +17,29 @@ GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
        ├─ github.rest.repos.createDeployment() ──► returns deploymentId
        ├─ kubectl apply secret (CELLENZA_GITHUB_TOKEN)
        └─ kubectl apply Cellenza CR ──► spec.github.deploymentId = <id>
+                                        spec.testSuite.enabled = true
                               │
                               ▼
                     Cellenza Operator (reconcile loop)
                               │
               ┌───────────────┼─────────────────────────┐
          Namespace        PostgreSQL               OTel injection
-         Deployment     Migration Job           (auto-instrumentation)
-         Service           Seed Job                    │
-         Ingress         Secret + Service               ▼
-         ResourceQuota                           Jaeger (traces)
-              │
+         Deployment     (init_db on start)       (auto-instrumentation)
+         Service         Secret + Service               │
+         Ingress*        ResourceQuota                  ▼
+              │                                  Jaeger (traces)
               ├─ Phase Provisioning → GitHub: in_progress + PR comment
-              ├─ Phase Running      → GitHub: success + URL + PR comment
+              ├─ Phase Running      → launches test suite in parallel:
+              │                         ├── smoke     (built-in)
+              │                         ├── regression (/app/tests/regression.py)
+              │                         └── e2e        (/app/tests/e2e.py)
+              │                       → GitHub: success + URL + PR comment
+              │                       → PR comment with test results table
               └─ Phase Terminating  → GitHub: inactive
 
 PR closed → cleanup.yaml → kubectl delete Cellenza → finalizer teardown
+
+* ingress-nginx must be installed with admissionWebhooks.enabled=false (see Step 3)
 ```
 
 ---
@@ -93,13 +100,29 @@ kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout
 
 > Do not pin a specific version — older pinned versions (e.g. `4.15.1`) are removed from the repo index over time.
 
+**Important:** disable admission webhooks. In a Kind cluster the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with:
+`x509: certificate signed by unknown authority`
+
 ```bash
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace \
+  --set controller.admissionWebhooks.enabled=false \
   --wait
 
 kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
+```
+
+If ingress-nginx was already installed without this flag, reinstall it:
+
+```bash
+helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --set controller.admissionWebhooks.enabled=false \
+  --wait
+
+# Remove the stale webhook if it still exists
+kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
 ```
 
 **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the preview](#accessing-the-preview)).
@@ -712,6 +735,11 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 To upgrade to a new version of the Cellenza Operator (e.g. `0.12.8`):
 
 ```bash
+# Always apply the CRD first — the chart does not update CRDs automatically
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.12.8 \
+  | tail -n +3 \
+  | kubectl apply -f -
+
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
   --version 0.12.8 \
@@ -720,10 +748,7 @@ helm upgrade cellenza-operator \
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
 ```
 
-> If the CRD schema changed, apply the updated CRD manually first:
-> ```bash
-> kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/cellenza-operator/v0.12.8/charts/cellenza-operator/crds/platform.company.io_cellenzas.yaml
-> ```
+> `tail -n +3` strips the two-line Helm OCI pull header (`Pulled: ...` / `Digest: ...`) that `helm show crds` prepends to the YAML output.
 
 ### Expose for local Kind (ngrok)
 
@@ -772,6 +797,33 @@ kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOK
 kubectl rollout restart deployment/github-runner -n github-runner
 kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected: "Listening for Jobs"
+```
+
+### Cellenza Failed — ingress x509 webhook error
+
+Symptom: `kubectl describe cz pr-<N>` shows:
+```
+Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io":
+tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+Cause: ingress-nginx was installed with admission webhooks enabled. The webhook certificate is self-signed and not trusted in a Kind cluster.
+
+Fix:
+```bash
+# Remove the stale webhook
+kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
+
+# Reinstall ingress-nginx with webhooks disabled (permanent fix)
+helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --set controller.admissionWebhooks.enabled=false \
+  --wait
+
+# Retrigger the preview (delete the failed CR and push an empty commit)
+kubectl delete cellenza pr-<N> --ignore-not-found
+git commit --allow-empty -m "ci: retrigger preview"
+git push
 ```
 
 ### No traces in Jaeger
