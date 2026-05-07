@@ -136,29 +136,12 @@ jobs:
             database:
               enabled: true
               databaseName: appdb
-              migration:
-                enabled: true
-                command: ["alembic", "upgrade", "head"]
             telemetry:
               enabled: true
               serviceName: idp-testing
               autoInstrumentation:
                 language: python
                 instrumentationRef: observability/python
-            aiEnrichment:
-              enabled: true
-              apiSecretRef:
-                name: ai-api-key
-                key: api-key
-              githubTokenSecretRef:
-                name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
-                namespace: cellenza-operator-system
-                key: token
-              model: gpt-4o
-              seed:
-                enabled: true
-              tests:
-                enabled: true
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
