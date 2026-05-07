@@ -140,7 +140,7 @@ The chart is published as an OCI artifact on GHCR (public, no login required).
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.12.8 \
+  --version 0.13.1 \
   --namespace cellenza-operator-system \
   --create-namespace \
   --wait
@@ -750,17 +750,17 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 
 ### Upgrade the operator
 
-To upgrade to a new version of the Cellenza Operator (e.g. `0.12.8`):
+To upgrade to a new version of the Cellenza Operator (e.g. `0.13.1`):
 
 ```bash
 # Always apply the CRD first — the chart does not update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.12.8 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.1 \
   | tail -n +3 \
   | kubectl apply -f -
 
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.12.8 \
+  --version 0.13.1 \
   --namespace cellenza-operator-system
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
@@ -1067,12 +1067,12 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | 4.15.1 | `admissionWebhooks.enabled=false` required |
-| Cellenza Operator | `cellenza-operator-system` | **0.12.8** | Multi-service + testSuite support |
+| Cellenza Operator | `cellenza-operator-system` | **0.13.1** | Multi-service + testSuite support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`, `RUNNER_TOKEN` |
-| Cellenza Extension | `cellenza-operator-system` | **0.12.8** | |
+| Cellenza Extension | `cellenza-operator-system` | **0.13.1** | |
 
 ## App files
 
