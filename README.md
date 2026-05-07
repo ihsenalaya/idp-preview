@@ -1,7 +1,7 @@
 # idp-testing
 
 Demo application for validating the Cellenza preview environment workflow.  
-Each pull request gets an isolated Kubernetes environment with its own PostgreSQL database, a public URL, and automatic GitHub Deployment status. Traces are collected by OpenTelemetry and visible in Jaeger.
+Each pull request gets an isolated Kubernetes environment with a **React-style frontend** and a **Python API backend**, their own PostgreSQL database, a public URL, and automatic GitHub Deployment status. Traces are collected by OpenTelemetry and visible in Jaeger.
 
 ---
 
@@ -13,26 +13,30 @@ PR opened / updated
        ▼
 GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
        │
-       ├─ Kaniko ──► builds image ──► pushes to GHCR
+       ├─ Kaniko ──► builds single image ──► pushes to GHCR
+       │             (APP_MODE=frontend → frontend.py / default → app.py)
        ├─ github.rest.repos.createDeployment() ──► returns deploymentId
        ├─ kubectl apply secret (CELLENZA_GITHUB_TOKEN)
-       └─ kubectl apply Cellenza CR ──► spec.github.deploymentId = <id>
+       └─ kubectl apply Cellenza CR ──► spec.services[] (multi-service)
                                         spec.testSuite.enabled = true
                               │
                               ▼
                     Cellenza Operator (reconcile loop)
                               │
-              ┌───────────────┼─────────────────────────┐
-         Namespace        PostgreSQL               OTel injection
-         Deployment     (init_db on start)       (auto-instrumentation)
-         Service         Secret + Service               │
-         Ingress*        ResourceQuota                  ▼
-              │                                  Jaeger (traces)
+              ┌───────────────┼──────────────────────────────┐
+         Namespace        PostgreSQL                    OTel injection
+         svc-backend    (init_db on start)           (auto-instrumentation)
+         svc-frontend    Secret + Service                    │
+         Ingress*:                                           ▼
+           /api  → svc-backend:8080              Jaeger (traces)
+           /     → svc-frontend:3000
+         ResourceQuota
+              │
               ├─ Phase Provisioning → GitHub: in_progress + PR comment
               ├─ Phase Running      → launches test suite in parallel:
-              │                         ├── smoke     (built-in)
+              │                         ├── smoke      (built-in, targets backend)
               │                         ├── regression (/app/tests/regression.py)
-              │                         └── e2e        (/app/tests/e2e.py)
+              │                         └── e2e        (/app/tests/e2e.py, Playwright)
               │                       → GitHub: success + URL + PR comment
               │                       → PR comment with test results table
               └─ Phase Terminating  → GitHub: inactive
@@ -360,7 +364,7 @@ gh pr create --title "test: trigger preview" --body "Testing the preview flow"
 
 ## Complete Cellenza CR example
 
-This is the full CR applied by `preview.yaml`. It shows every operator feature.
+This is the full CR applied by `preview.yaml`. It shows every operator feature including multi-service.
 
 ```yaml
 apiVersion: platform.company.io/v1alpha1
@@ -368,13 +372,30 @@ kind: Cellenza
 metadata:
   name: pr-42
 spec:
-  # ── App ──────────────────────────────────────────────────────────────────
+  # ── Identity ──────────────────────────────────────────────────────────────
   branch: feature/my-feature
   prNumber: 42
-  image: ghcr.io/ihsenalaya/idp-testing:pr-42
-  replicas: 1
+  image: ghcr.io/ihsenalaya/idp-testing:sha-abc  # required by webhook, ignored when services[] is set
   ttl: 48h
   resourceTier: medium        # small | medium | large
+
+  # ── Multi-service (frontend + backend) ───────────────────────────────────
+  services:
+    - name: backend
+      image: ghcr.io/ihsenalaya/idp-testing:sha-abc
+      port: 8080
+      pathPrefix: /api          # ingress routes /api/* → this service
+    - name: frontend
+      image: ghcr.io/ihsenalaya/idp-testing:sha-abc
+      port: 3000
+      pathPrefix: /             # ingress routes /* → this service
+      env:
+        - name: APP_MODE
+          value: frontend       # switches entrypoint to frontend.py
+        - name: PREVIEW_PR
+          value: "42"
+        - name: PREVIEW_BRANCH
+          value: feature/my-feature
 
   # ── Approval gate (optional) ──────────────────────────────────────────────
   requiresApproval: false
@@ -383,20 +404,8 @@ spec:
   # ── Database ──────────────────────────────────────────────────────────────
   database:
     enabled: true
-    version: "16"
     databaseName: appdb
-
-    migration:
-      enabled: true
-      command: ["python", "manage.py", "migrate"]
-      # image: defaults to spec.image
-
-    seed:
-      enabled: true
-      command: ["python", "manage.py", "loaddata", "fixtures/dev.json"]
-      # image: defaults to spec.image
-
-    # resetRequested: true    # set by @cellenza reset-db — re-runs migration+seed
+    # init_db() is called by the backend on startup — no migration job needed
 
   # ── Telemetry ─────────────────────────────────────────────────────────────
   telemetry:
@@ -405,6 +414,15 @@ spec:
     autoInstrumentation:
       language: python
       instrumentationRef: observability/python
+
+  # ── Test Suite ────────────────────────────────────────────────────────────
+  testSuite:
+    enabled: true
+    smoke: {}                   # built-in — targets backend /healthz + /api/products
+    regression:
+      enabled: true             # runs /app/tests/regression.py via backend image
+    e2e:
+      enabled: true             # runs /app/tests/e2e.py with Playwright
 
   # ── GitHub integration ────────────────────────────────────────────────────
   github:
@@ -856,7 +874,24 @@ kubectl get cz pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
 
 ## Application
 
-The demo app is a **product catalogue** (v2.0.0) backed by PostgreSQL — designed to showcase AI enrichment with a realistic business schema.
+The demo app is a **product catalogue** (v3.0.0) split into two services backed by PostgreSQL — designed to showcase the Cellenza multi-service preview feature and AI enrichment.
+
+### Services
+
+| Service | File | Port | Path | Role |
+|---------|------|------|------|------|
+| `backend` | `app.py` | `8080` | `/api` | REST API + DB init |
+| `frontend` | `frontend.py` | `3000` | `/` | SPA served by Flask |
+
+Both services are built from the **same Docker image**. The entry point is selected via the `APP_MODE` environment variable:
+
+```bash
+# default → backend
+docker run -e DATABASE_URL=... image
+
+# frontend
+docker run -e APP_MODE=frontend image
+```
 
 ### Database schema
 
@@ -867,16 +902,30 @@ reviews    (id, product_id, author, rating INT CHECK(1..5), comment, created_at)
 orders     (id, product_id, quantity, status, created_at)
 ```
 
-### HTML UI
+The backend calls `init_db()` on startup — tables are created with `CREATE TABLE IF NOT EXISTS`, so restarts are safe.
 
-| Route | Description |
-|---|---|
-| `GET /` | PostgreSQL status, env vars, product grid with ratings and stock badges, AI enrichment card |
-| `POST /add-product` | Add a product via the HTML form |
-| `GET /healthz` | Returns `ok` — liveness/readiness probe |
-| `GET /ping` | Returns `pong` |
+### Frontend (`frontend.py` — port 3000)
 
-The AI enrichment card appears on the homepage once `ai-seed` has run. It shows a table of AI-generated products with category, price, discount, stock, and star rating — along with totals for products, reviews, and orders.
+Single-page application served at `/`. All data is fetched from `/api` via JavaScript `fetch()` — the ingress routes the calls to the backend transparently.
+
+| Feature | Details |
+|---------|---------|
+| Product grid | Cards with category, price, discount badge, stock color, star rating |
+| Product detail panel | Side panel with `data-testid` attributes for Playwright E2E |
+| Related products | Listed inside the detail panel |
+| Add product form | `POST /api/products` — form validates name + price |
+| Stats bar | Total products, categories, reviews, orders, out-of-stock |
+| Preview badge | PR number + branch shown in header when `PREVIEW_PR` is set |
+
+### Backend (`app.py` — port 8080)
+
+Pure REST API — no HTML rendering.
+
+| Route | Method | Description |
+|---|---|---|
+| `/healthz` | GET | Returns `ok` — liveness/readiness probe |
+| `/ping` | GET | Returns `pong` |
+| `/api/version` | GET | `{"version":"3.0.0","feature":"product-catalogue"}` |
 
 ### JSON REST API
 
@@ -1014,13 +1063,24 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 
 ## Installed components
 
-| Component | Namespace | Version |
-|-----------|-----------|---------|
-| cert-manager | `cert-manager` | v1.20.2 |
-| ingress-nginx | `ingress-nginx` | 4.15.1 |
-| Cellenza Operator | `cellenza-operator-system` | **0.12.8** |
-| OpenTelemetry Operator | `opentelemetry-operator-system` | 0.110.0 |
-| Jaeger (all-in-one) | `observability` | 1.67.0 |
-| OTel Collector + Instrumentation | `observability` | 0.149.0 |
-| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` |
-| Cellenza Extension | `cellenza-operator-system` | **0.12.8** |
+| Component | Namespace | Version | Notes |
+|-----------|-----------|---------|-------|
+| cert-manager | `cert-manager` | v1.20.2 | |
+| ingress-nginx | `ingress-nginx` | 4.15.1 | `admissionWebhooks.enabled=false` required |
+| Cellenza Operator | `cellenza-operator-system` | **0.12.8** | Multi-service + testSuite support |
+| OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
+| Jaeger (all-in-one) | `observability` | 1.67.0 | |
+| OTel Collector + Instrumentation | `observability` | 0.149.0 | |
+| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`, `RUNNER_TOKEN` |
+| Cellenza Extension | `cellenza-operator-system` | **0.12.8** | |
+
+## App files
+
+| File | Role | Port |
+|------|------|------|
+| `app.py` | Backend — REST API only | `8080` |
+| `frontend.py` | Frontend — SPA served by Flask | `3000` |
+| `Dockerfile` | Single image, `APP_MODE=frontend` switches entrypoint | — |
+| `tests/regression.py` | Regression tests run by the operator | — |
+| `tests/e2e.py` | Playwright E2E tests run by the operator | — |
+| `tests/example_test.py` | Template used by AI enrichment to generate `test.py` | — |
