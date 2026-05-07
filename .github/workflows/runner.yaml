@@ -1,0 +1,198 @@
+name: Bootstrap Kind Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      recreate:
+        description: "Delete existing cluster before creating"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  KIND_CLUSTER: cellenza-preview
+  CERT_MANAGER_VERSION: v1.16.0
+  OPERATOR_CHART: oci://ghcr.io/ihsenalaya/charts/cellenza-operator
+  OPERATOR_VERSION: "0.12.4"
+  RUNNER_NAMESPACE: github-runner
+
+jobs:
+  bootstrap:
+    name: Bootstrap Kind Cluster
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: "3635064"
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Delete existing cluster
+        if: ${{ inputs.recreate == 'true' }}
+        run: kind delete cluster --name $KIND_CLUSTER || true
+
+      - name: Create kind cluster
+        run: |
+          if kind get clusters | grep -q "^${KIND_CLUSTER}$"; then
+            echo "Cluster '${KIND_CLUSTER}' already exists, skipping creation."
+          else
+            kind create cluster --name $KIND_CLUSTER --wait 60s
+            echo "Cluster '${KIND_CLUSTER}' created."
+          fi
+
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
+          kubectl wait --namespace cert-manager \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/instance=cert-manager \
+            --timeout=120s
+
+      - name: Create runner namespace
+        run: kubectl create namespace $RUNNER_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create AI API key secret
+        run: |
+          kubectl create secret generic ai-api-key \
+            --namespace=cellenza-operator-system \
+            --from-literal=api-key='${{ secrets.AI_API_KEY }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create GHCR pull secret for operator
+        run: |
+          kubectl create namespace cellenza-operator-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username='${{ github.repository_owner }}' \
+            --docker-password='${{ steps.app-token.outputs.token }}' \
+            --namespace=cellenza-operator-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install cellenza-operator
+        run: |
+          helm upgrade --install cellenza-operator ${OPERATOR_CHART} \
+            --version ${OPERATOR_VERSION} \
+            --namespace cellenza-operator-system \
+            --create-namespace \
+            --set image.pullSecrets[0]=ghcr-pull-secret \
+            --wait --timeout=120s
+
+      - name: Register self-hosted runner
+        run: |
+          RUNNER_TOKEN=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token" \
+            | jq -r .token)
+
+          kubectl create secret generic runner-token \
+            --namespace=$RUNNER_NAMESPACE \
+            --from-literal=token="${RUNNER_TOKEN}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: github-runner
+            namespace: ${RUNNER_NAMESPACE}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: github-runner
+            template:
+              metadata:
+                labels:
+                  app: github-runner
+              spec:
+                serviceAccountName: github-runner
+                containers:
+                  - name: runner
+                    image: ghcr.io/actions/actions-runner:latest
+                    env:
+                      - name: GITHUB_URL
+                        value: https://github.com/${{ github.repository }}
+                      - name: RUNNER_TOKEN
+                        valueFrom:
+                          secretKeyRef:
+                            name: runner-token
+                            key: token
+                      - name: RUNNER_NAME
+                        value: kind-runner
+                      - name: RUNNER_LABELS
+                        value: self-hosted,kind
+                      - name: RUNNER_WORKDIR
+                        value: /tmp/runner
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 256Mi
+                      limits:
+                        cpu: 1000m
+                        memory: 1Gi
+                    volumeMounts:
+                      - name: docker-sock
+                        mountPath: /var/run/docker.sock
+                volumes:
+                  - name: docker-sock
+                    hostPath:
+                      path: /var/run/docker.sock
+          ---
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: github-runner
+            namespace: ${RUNNER_NAMESPACE}
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: github-runner-admin
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+            - kind: ServiceAccount
+              name: github-runner
+              namespace: ${RUNNER_NAMESPACE}
+          EOF
+
+          kubectl rollout status deployment/github-runner \
+            --namespace=$RUNNER_NAMESPACE \
+            --timeout=120s
+
+      - name: Cluster ready
+        run: |
+          echo "Kind cluster '${KIND_CLUSTER}' is ready."
+          kubectl get nodes
+          kubectl get pods --all-namespaces

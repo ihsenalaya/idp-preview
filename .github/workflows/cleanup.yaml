@@ -18,6 +18,13 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Install kubectl
         run: |
           if ! command -v kubectl >/dev/null 2>&1; then
@@ -32,7 +39,7 @@ jobs:
         run: |
           kubectl create secret generic "$GITHUB_TOKEN_SECRET" \
             --namespace=cellenza-operator-system \
-            --from-literal=token='${{ secrets.GITHUB_TOKEN }}' \
+            --from-literal=token='${{ steps.app-token.outputs.token }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Delete Cellenza
@@ -57,7 +64,7 @@ jobs:
             --repo ${{ github.repository }} \
             --body "Preview environment **pr-${{ github.event.pull_request.number }}** supprimé."
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Cleanup controller GitHub token secret
         if: always()
