@@ -142,6 +142,13 @@ jobs:
               autoInstrumentation:
                 language: python
                 instrumentationRef: observability/python
+            testSuite:
+              enabled: true
+              smoke: {}
+              regression:
+                enabled: true
+              e2e:
+                enabled: true
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
@@ -178,17 +185,6 @@ jobs:
 
           kubectl describe cellenza pr-${{ github.event.pull_request.number }} || true
           exit 1
-
-      - name: Run tests
-        run: |
-          APP_URL="http://app.preview-pr-${{ github.event.pull_request.number }}.svc.cluster.local:80"
-          pip install requests --quiet
-
-          echo "=== Unit tests ==="
-          python tests/test_app.py
-
-          echo "=== Integration tests ==="
-          APP_URL="${APP_URL}" python tests/example_test.py
 
       - name: Cleanup Kaniko secret
         if: always()
