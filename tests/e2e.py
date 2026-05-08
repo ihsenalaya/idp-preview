@@ -2,19 +2,43 @@
 Browser E2E tests using Playwright — validates the real user experience.
 Tests run headless Chromium against the live preview app deployed by Cellenza.
 Output lines starting with PASS/FAIL are parsed by the Cellenza operator.
+
+Before each test the database is restored to the after-seed checkpoint so every
+test runs against an identical, predictable baseline.
 """
 import os
 import sys
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-BASE = os.environ.get("APP_URL", "http://app:80")
+BASE             = os.environ.get("APP_URL", "http://app:80")
+CHECKPOINT_API   = os.environ.get("CHECKPOINT_API", "")
+CHECKPOINT_NAME  = "after-seed"
 
 passed = 0
 failed = 0
 
 
+def reset_db():
+    """Restore the database to the after-seed checkpoint.
+
+    Non-fatal: if the checkpoint API is unavailable or the checkpoint has not
+    been created yet, the test proceeds without a reset (graceful degradation).
+    """
+    if not CHECKPOINT_API:
+        return
+    try:
+        import requests
+        url = f"{CHECKPOINT_API}/checkpoints/{CHECKPOINT_NAME}/restore"
+        r = requests.post(url, timeout=60)
+        if r.status_code not in (200, 404):
+            print(f"[db-reset] WARNING: restore returned {r.status_code}", flush=True)
+    except Exception as e:
+        print(f"[db-reset] WARNING: could not restore checkpoint: {e}", flush=True)
+
+
 def run(name, fn):
     global passed, failed
+    reset_db()
     with sync_playwright() as p:
         browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
         page = browser.new_page()
@@ -50,7 +74,6 @@ def test_preview_badge_shown(page):
     page.goto(BASE, wait_until="networkidle", timeout=30000)
     badge = page.locator('[data-testid="preview-badge"]')
     if badge.count() == 0:
-        # PREVIEW_PR not set in this environment — skip gracefully
         return
     badge.wait_for(state="visible", timeout=5000)
     text = badge.inner_text()
@@ -95,7 +118,6 @@ def test_discount_filter(page):
 
     page.locator('[data-testid="discount-input"]').fill("50")
     page.locator('[data-testid="discount-apply"]').click()
-    # Wait for JS fetch + DOM re-render
     page.wait_for_function("document.querySelectorAll('[data-testid=\"product-card\"]').length >= 0", timeout=8000)
     page.wait_for_timeout(600)
 
@@ -118,17 +140,17 @@ def test_close_detail(page):
     page.locator('[data-testid="product-detail"]').wait_for(state="visible", timeout=10000)
 
     page.locator('[data-testid="close-detail"]').click()
-    page.wait_for_timeout(400)  # allow CSS transition
+    page.wait_for_timeout(400)
     overlay = page.locator('[data-testid="detail-overlay"]')
     assert not overlay.is_visible(), "detail overlay still visible after clicking close"
 
 
-run("catalog_page_loads", test_catalog_page_loads)
-run("preview_badge_shown", test_preview_badge_shown)
-run("product_detail_panel", test_product_detail_panel)
-run("related_section", test_related_section)
-run("discount_filter", test_discount_filter)
-run("close_detail", test_close_detail)
+run("catalog_page_loads",    test_catalog_page_loads)
+run("preview_badge_shown",   test_preview_badge_shown)
+run("product_detail_panel",  test_product_detail_panel)
+run("related_section",       test_related_section)
+run("discount_filter",       test_discount_filter)
+run("close_detail",          test_close_detail)
 
 print(f"Results: {passed} passed, {failed} failed")
 sys.exit(1 if failed > 0 else 0)
