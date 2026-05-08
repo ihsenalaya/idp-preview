@@ -33,10 +33,14 @@ GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
          ResourceQuota
               │
               ├─ Phase Provisioning → GitHub: in_progress + PR comment
-              ├─ Phase Running      → launches test suite in parallel:
-              │                         ├── smoke      (built-in, targets backend)
-              │                         ├── regression (/app/tests/regression.py)
-              │                         └── e2e        (/app/tests/e2e.py, Playwright)
+              ├─ Phase Running      → runs test pipeline sequentially:
+              │                         step 1: suite-checkpoint-save (pg_dump → ConfigMap)
+              │                         step 2: smoke-tests (built-in, targets backend)
+              │                         step 3: suite-restore-regression (TRUNCATE + replay)
+              │                         step 4: regression-tests (/app/tests/regression.py)
+              │                         step 5: suite-restore-e2e (TRUNCATE + replay)
+              │                         step 6: e2e-tests (/app/tests/e2e.py, Playwright)
+              │                                   └── reset_db() before each test
               │                       → GitHub: success + URL + PR comment
               │                       → PR comment with test results table
               └─ Phase Terminating  → GitHub: inactive
@@ -140,7 +144,7 @@ The chart is published as an OCI artifact on GHCR (public, no login required).
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.5 \
+  --version 0.13.6 \
   --namespace cellenza-operator-system \
   --create-namespace \
   --wait
@@ -571,20 +575,92 @@ spec:
 
 ## Automated Test Suite
 
-The Cellenza operator runs **three types of tests in parallel** after each preview environment is ready. Results appear as a dedicated PR comment.
+The Cellenza operator runs **smoke, regression, and E2E tests sequentially** after the preview environment is ready. A database checkpoint is saved once after the AI seed, then restored before each suite — and again before each individual E2E test — so every test always starts from an identical, known baseline.
 
-### Test flow
+### Full pipeline
 
 ```
-Environment Running
+AI enrichment seed (10 products, 3 categories, reviews)
        │
-       ├── smoke-tests     (built-in, operator-managed)
-       ├── regression-tests (app image: /app/tests/regression.py)
-       └── e2e-tests        (app image: /app/tests/e2e.py)
-                │
-                ▼
-       PR comment with pass/fail table
+       ▼
+[Job] suite-checkpoint-save          ← pg_dump --data-only → ConfigMap "db-checkpoint-after-seed"
+       │
+       ▼
+[Job] smoke-tests                    ← probes /healthz + /api/products (operator-embedded)
+       │
+       ▼
+[Job] suite-restore-regression       ← TRUNCATE all tables + psql replay
+       │
+       ▼
+[Job] regression-tests               ← tests/regression.py from the app image
+       │
+       ▼
+[Job] suite-restore-e2e              ← TRUNCATE + psql replay (DB back to post-seed state)
+       │
+       ▼
+[Job] e2e-tests (Playwright/Chromium)
+         │
+         ├── reset_db() → restore before test_catalog_page_loads
+         ├── reset_db() → restore before test_product_detail_panel
+         ├── reset_db() → restore before test_discount_filter
+         └── reset_db() → restore before each subsequent test
 ```
+
+### Two levels of DB isolation
+
+| Level | Mechanism | Purpose |
+|-------|-----------|---------|
+| **Between suites** | `suite-restore-regression`, `suite-restore-e2e` jobs | Prevents regression suite from polluting E2E (e.g. modified stock, created orders) |
+| **Between each E2E test** | `reset_db()` in `tests/e2e.py` | Ensures each Playwright test sees exactly the same data regardless of execution order |
+
+### How reset_db() works
+
+The e2e pod receives a `CHECKPOINT_API` environment variable injected by the operator. Before each test, the script calls:
+
+```
+POST http://cellenza-extension.../api/previews/pr-42/checkpoints/after-seed/restore
+```
+
+The extension patches the CR (`spec.database.checkpointRestore = "after-seed"`). The controller creates a Kubernetes Job that runs `TRUNCATE` + `psql` replay, then returns HTTP 200. The Playwright test only starts once the restore is complete.
+
+```python
+# tests/e2e.py
+CHECKPOINT_API  = os.environ.get("CHECKPOINT_API", "")
+CHECKPOINT_NAME = "after-seed"
+
+def reset_db():
+    """Restore DB to post-seed state. Non-fatal if API is unavailable."""
+    if not CHECKPOINT_API:
+        return
+    try:
+        import requests
+        r = requests.post(f"{CHECKPOINT_API}/checkpoints/{CHECKPOINT_NAME}/restore", timeout=60)
+        if r.status_code not in (200, 404):
+            print(f"[db-reset] WARNING: restore returned {r.status_code}", flush=True)
+    except Exception as e:
+        print(f"[db-reset] WARNING: could not restore checkpoint: {e}", flush=True)
+
+def run(name, fn):
+    reset_db()          # clean DB guaranteed before every test
+    with sync_playwright() as p:
+        ...
+```
+
+### Role of the controller in orchestration
+
+The controller is the orchestrator. It runs in a reconciliation loop and tracks progress via `status.tests.step`. If the cluster restarts or a job crashes, it resumes exactly where it left off — no state is lost. A classic bash script would be lost in that scenario.
+
+```
+Reconcile() → reads status.tests.step
+  "saving"             → creates pg_dump job, waits for completion, stores dump in ConfigMap
+  "smoke"              → creates smoke-tests job, waits for completion
+  "restore-regression" → creates restore job, waits for completion
+  "regression"         → creates regression-tests job, waits for completion
+  "restore-e2e"        → creates restore job, waits for completion
+  "e2e"                → creates e2e-tests job, waits for completion
+```
+
+The `status.tests.step` field is persisted in etcd — making the pipeline crash-safe and idempotent.
 
 ### What each test type validates
 
@@ -594,15 +670,15 @@ Environment Running
 | **Regression** | All existing endpoints return expected status + structure | Catches regressions on a real DB, not mocked |
 | **E2E** | Complete user flows (browse → detail → related, discount filter) | Tests interactions between components on a real environment |
 
-### Apport du controller vs environnement de test classique
+### Why sequential rather than parallel
 
-Dans un environnement de staging partagé classique, exécuter des tests de régression et E2E présente deux problèmes majeurs : la **pollution entre PRs** (deux PRs qui tournent simultanément se mélangent dans la même base de données) et les **données instables** (le staging contient des données accumulées de tests précédents).
+In a classic shared staging environment, running regression and E2E tests has two major problems: **cross-PR pollution** (two PRs running simultaneously share the same database) and **unstable data** (staging accumulates data from previous test runs).
 
-Le controller Cellenza résout les deux :
+The Cellenza controller solves both:
 
-- **Isolation complète** : chaque PR a son propre namespace, sa propre base de données, ses propres credentials. Les tests de la PR #28 n'interfèrent jamais avec ceux de la PR #29.
-- **Données fraîches** : chaque environnement démarre avec une base vide, puis le seed AI injecte des données contextuelles à la PR. Les tests de régression et E2E tournent sur un état de données propre et prévisible.
-- **Environnement réel** : contrairement aux tests CI avec DB mockée, les jobs tournent contre un vrai PostgreSQL déployé, avec la vraie migration appliquée.
+- **Complete isolation**: each PR has its own namespace, its own database, its own credentials. Tests from PR #28 never interfere with PR #29.
+- **Fresh data**: each environment starts with an empty database, then the AI seed injects contextual data. Tests always run against a clean, predictable baseline.
+- **Real environment**: unlike CI tests with a mocked DB, jobs run against a real deployed PostgreSQL with the real migration applied.
 
 ### Enabling the test suite
 
@@ -627,6 +703,9 @@ The `tests/` folder is already included in this repo's Docker image.
 # Summary
 kubectl get cz pr-42 -o jsonpath='{.status.tests}' | jq .
 
+# Current pipeline step
+kubectl get cz pr-42 -o jsonpath='{.status.tests.step}'
+
 # Per-suite details
 kubectl get cz pr-42 -o jsonpath='{.status.tests.smoke}'
 kubectl get cz pr-42 -o jsonpath='{.status.tests.regression}'
@@ -644,7 +723,7 @@ kubectl get cz pr-42 -o jsonpath='{.status.tests.e2e}'
 |------------|--------------|--------|--------|
 | Smoke      | ✅ Succeeded | 2      | 0      |
 | Regression | ✅ Succeeded | 8      | 0      |
-| E2E        | ✅ Succeeded | 4      | 0      |
+| E2E        | ✅ Succeeded | 6      | 0      |
 ```
 
 ---
@@ -750,17 +829,17 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 
 ### Upgrade the operator
 
-To upgrade to a new version of the Cellenza Operator (e.g. `0.13.5`):
+To upgrade to a new version of the Cellenza Operator (e.g. `0.13.6`):
 
 ```bash
 # Always apply the CRD first — the chart does not update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.5 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.6 \
   | tail -n +3 \
   | kubectl apply -f -
 
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.5 \
+  --version 0.13.6 \
   --namespace cellenza-operator-system
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
@@ -1069,12 +1148,12 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | 4.15.1 | `admissionWebhooks.enabled=false` required |
-| Cellenza Operator | `cellenza-operator-system` | **0.13.5** | Multi-service + testSuite séquentiel (checkpoint save/restore) + AI enrichment |
+| Cellenza Operator | `cellenza-operator-system` | **0.13.6** | Multi-service + testSuite séquentiel (checkpoint save/restore) + AI enrichment + per-test DB restore |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`, `RUNNER_TOKEN` |
-| Cellenza Extension | `cellenza-operator-system` | **0.13.5** | |
+| Cellenza Extension | `cellenza-operator-system` | **0.13.6** | |
 
 ## App files
 
