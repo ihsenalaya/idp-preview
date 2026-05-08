@@ -447,7 +447,7 @@ spec:
       name: cellenza-github-token
       namespace: cellenza-operator-system
       key: token
-    model: gpt-4o             # gpt-4o-mini (default), gpt-4o, etc.
+    model: gpt-4o-mini        # gpt-4o-mini (fast + cheap), gpt-4o (better quality)
     seed:
       enabled: true           # runs ai-seed Job: psql seed.sql against the preview DB
     tests:
