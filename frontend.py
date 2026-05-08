@@ -128,15 +128,20 @@ def index(path):
 
     <div class="card">
       <h2 id="catalog-title">Catalogue produits</h2>
-      <div id="catalog-sections"><p class="empty">Chargement…</p></div>
+      <div style="display:flex;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap">
+        <input id="discount-filter" data-testid="discount-input" type="number" placeholder="Remise min %" min="0" max="100" style="max-width:160px">
+        <button data-testid="discount-apply" onclick="applyDiscount()">Filtrer remises</button>
+        <button onclick="loadProducts()" style="background:#64748b">Tout afficher</button>
+      </div>
+      <div id="catalog-sections" data-testid="product-grid"><p class="empty">Chargement…</p></div>
     </div>
 
   </div>
 
   <!-- Detail panel -->
-  <div class="panel-overlay" id="panel-overlay" onclick="closePanel(event)">
+  <div class="panel-overlay" data-testid="detail-overlay" id="panel-overlay" onclick="closePanel(event)">
     <div class="panel" data-testid="product-detail" id="detail-panel">
-      <button class="close-btn" onclick="closePanel()">✕ Fermer</button>
+      <button class="close-btn" data-testid="close-detail" onclick="closePanel()">✕ Fermer</button>
       <h3 data-testid="detail-name" id="detail-name"></h3>
       <div class="price" data-testid="detail-price" id="detail-price"></div>
       <p id="detail-desc" style="font-size:.85rem;color:#64748b"></p>
@@ -147,7 +152,7 @@ def index(path):
         <div id="reviews-list"></div>
       </div>
 
-      <div data-testid="related-products">
+      <div data-testid="related-section">
         <div class="section-title">Produits similaires</div>
         <div class="related-list" id="related-list"></div>
       </div>
@@ -205,7 +210,7 @@ def index(path):
     function productCardHTML(p) {{
       const disc = parseFloat(p.discount_pct || 0);
       const final = (parseFloat(p.price) * (1 - disc / 100)).toFixed(2);
-      const discBadge = disc ? `<span class="disc">-${{Math.round(disc)}}%</span>` : '';
+      const discBadge = disc ? `<span class="disc" data-testid="product-discount">-${{Math.round(disc)}}%</span>` : '';
       const avg = p.avg_rating
         ? `<div style="margin-top:.3rem"><span class="stars">${{stars(p.avg_rating)}}</span> <small style="color:#94a3b8">${{p.review_count}} avis</small></div>`
         : '';
@@ -242,7 +247,7 @@ def index(path):
               ${{cat}}
               <span class="cat-count">${{byCategory[cat].length}} produit${{byCategory[cat].length > 1 ? 's' : ''}}</span>
             </div>
-            <div class="grid" data-testid="product-grid">
+            <div class="grid">
               ${{byCategory[cat].map(productCardHTML).join('')}}
             </div>
           </div>
@@ -317,6 +322,22 @@ def index(path):
         document.getElementById('f-price').value = '';
         loadProducts(); loadStats();
       }} catch(e) {{ err.textContent = "Erreur lors de l\\'ajout."; }}
+    }}
+
+    async function applyDiscount() {{
+      const min = document.getElementById('discount-filter').value || 0;
+      try {{
+        const data = await fetchJSON(`/products/discounted?min_discount=${{min}}`);
+        const products = data.products || data;
+        const container = document.getElementById('catalog-sections');
+        if (!products.length) {{
+          container.innerHTML = '<p class="empty">Aucun produit avec cette remise.</p>';
+          return;
+        }}
+        container.innerHTML = products.map(productCardHTML).join('');
+      }} catch(e) {{
+        document.getElementById('catalog-sections').innerHTML = '<p class="error-msg">Erreur filtre remise</p>';
+      }}
     }}
 
     loadStats(); loadCategories(); loadProducts();
