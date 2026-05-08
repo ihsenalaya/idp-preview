@@ -30,7 +30,7 @@ def index(path):
     .preview-badge{{background:#7c3aed;color:#fff;padding:.25rem .75rem;border-radius:999px;font-size:.78rem;font-weight:700;white-space:nowrap}}
     .container{{max-width:1100px;margin:2rem auto;padding:0 1rem;display:grid;gap:1.25rem}}
     .card{{background:#fff;border-radius:10px;padding:1.5rem;box-shadow:0 1px 4px rgba(0,0,0,.08)}}
-    .card h2{{font-size:.82rem;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-bottom:1rem}}
+    .card h2{{font-size:.82rem;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem}}
     .form-row{{display:flex;gap:.5rem;flex-wrap:wrap}}
     input,select{{flex:1;min-width:120px;padding:.5rem .75rem;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;outline:none;font-family:inherit}}
     input:focus,select:focus{{border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,.1)}}
@@ -41,7 +41,6 @@ def index(path):
     .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-top:1rem}}
     .prod-card{{border:1px solid #e2e8f0;border-radius:8px;padding:1rem;background:#fafafa;display:flex;flex-direction:column;gap:.35rem;cursor:pointer;transition:box-shadow .15s}}
     .prod-card:hover{{box-shadow:0 4px 12px rgba(0,0,0,.1);border-color:#c4b5fd}}
-    .prod-card[data-testid="product-card"]{{}}
     .prod-cat{{font-size:.68rem;text-transform:uppercase;color:#7c3aed;font-weight:700}}
     .prod-name{{font-weight:700;font-size:.95rem}}
     .prod-desc{{font-size:.78rem;color:#64748b;flex:1}}
@@ -49,19 +48,26 @@ def index(path):
     .prod-price{{font-weight:700}}
     .disc{{background:#fef9c3;color:#854d0e;border-radius:4px;padding:.1rem .35rem;font-size:.7rem;margin-left:.3rem}}
     .stock{{color:#fff;font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:999px}}
-    .stars{{color:#f59e0b;font-size:.8rem}}
+    .stars{{color:#f59e0b;font-size:.85rem}}
     .empty{{color:#cbd5e1;font-style:italic;font-size:.88rem;padding:1.5rem 0;text-align:center}}
+    .cat-section{{margin-bottom:.25rem}}
+    .cat-title{{font-size:.95rem;font-weight:700;color:#334155;padding:.6rem 0 .2rem;border-bottom:2px solid #e2e8f0;display:flex;align-items:center;gap:.5rem}}
+    .cat-count{{font-size:.72rem;font-weight:400;color:#94a3b8}}
+    .ai-badge{{background:linear-gradient(135deg,#7c3aed,#2563eb);color:#fff;font-size:.65rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;letter-spacing:.5px}}
     .panel-overlay{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;justify-content:flex-end}}
     .panel-overlay.open{{display:flex}}
-    .panel{{background:#fff;width:min(420px,100%);height:100%;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}}
+    .panel{{background:#fff;width:min(460px,100%);height:100%;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}}
     .panel h3[data-testid="detail-name"]{{font-size:1.1rem;font-weight:700}}
     .panel .price[data-testid="detail-price"]{{font-size:1.2rem;font-weight:700;color:#7c3aed}}
     .panel .close-btn{{align-self:flex-end;background:none;border:1px solid #e2e8f0;color:#64748b;padding:.3rem .7rem;border-radius:6px;cursor:pointer;font-size:.85rem}}
-    .related-section[data-testid="related-products"]{{}}
-    .related-section h4{{font-size:.78rem;text-transform:uppercase;color:#94a3b8;margin-bottom:.5rem}}
+    .section-title{{font-size:.75rem;text-transform:uppercase;letter-spacing:.7px;color:#94a3b8;margin-bottom:.5rem;font-weight:700}}
     .related-list{{display:flex;flex-direction:column;gap:.4rem}}
     .related-item{{padding:.5rem;border:1px solid #f1f5f9;border-radius:6px;font-size:.83rem;cursor:pointer}}
     .related-item:hover{{background:#f8f0ff;border-color:#c4b5fd}}
+    .review-item{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem;display:flex;flex-direction:column;gap:.3rem}}
+    .review-header{{display:flex;align-items:center;justify-content:space-between;gap:.5rem}}
+    .review-author{{font-weight:700;font-size:.82rem}}
+    .review-comment{{font-size:.83rem;color:#475569;line-height:1.45}}
     .stat-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:.75rem}}
     .stat-box{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem;text-align:center}}
     .stat-val{{font-size:1.5rem;font-weight:700;color:#7c3aed}}
@@ -96,10 +102,8 @@ def index(path):
     </div>
 
     <div class="card">
-      <h2>Catalogue produits</h2>
-      <div class="grid" data-testid="product-grid" id="product-grid">
-        <p class="empty">Chargement…</p>
-      </div>
+      <h2 id="catalog-title">Catalogue produits</h2>
+      <div id="catalog-sections"><p class="empty">Chargement…</p></div>
     </div>
 
   </div>
@@ -111,9 +115,15 @@ def index(path):
       <h3 data-testid="detail-name" id="detail-name"></h3>
       <div class="price" data-testid="detail-price" id="detail-price"></div>
       <p id="detail-desc" style="font-size:.85rem;color:#64748b"></p>
-      <div id="detail-stock" style="font-size:.82rem"></div>
-      <div class="related-section" data-testid="related-products">
-        <h4>Produits similaires</h4>
+      <div id="detail-stock" style="font-size:.82rem;color:#64748b"></div>
+
+      <div id="reviews-section">
+        <div class="section-title">Avis clients</div>
+        <div id="reviews-list"></div>
+      </div>
+
+      <div data-testid="related-products">
+        <div class="section-title">Produits similaires</div>
         <div class="related-list" id="related-list"></div>
       </div>
     </div>
@@ -142,12 +152,15 @@ def index(path):
     async function loadStats() {{
       try {{
         const s = await fetchJSON('/stats');
+        const aiTag = s.total_reviews > 0 ? '<span class="ai-badge">✦ IA</span>' : '';
+        document.getElementById('catalog-title').innerHTML = 'Catalogue produits ' + aiTag;
         document.getElementById('stats-grid').innerHTML = `
           <div class="stat-box"><div class="stat-val">${{s.total_products}}</div><div class="stat-lbl">Produits</div></div>
           <div class="stat-box"><div class="stat-val">${{s.total_categories}}</div><div class="stat-lbl">Catégories</div></div>
           <div class="stat-box"><div class="stat-val">${{s.total_reviews}}</div><div class="stat-lbl">Avis</div></div>
           <div class="stat-box"><div class="stat-val">${{s.total_orders}}</div><div class="stat-lbl">Commandes</div></div>
           <div class="stat-box"><div class="stat-val">${{s.out_of_stock}}</div><div class="stat-lbl">Rupture</div></div>
+          ${{s.avg_rating ? `<div class="stat-box"><div class="stat-val stars">${{s.avg_rating.toFixed(1)}}★</div><div class="stat-lbl">Note moy.</div></div>` : ''}}
         `;
       }} catch(e) {{ document.getElementById('stats-grid').innerHTML = '<p class="error-msg">Stats indisponibles</p>'; }}
     }}
@@ -164,51 +177,89 @@ def index(path):
       }} catch(e) {{}}
     }}
 
+    function productCardHTML(p) {{
+      const disc = parseFloat(p.discount_pct || 0);
+      const final = (parseFloat(p.price) * (1 - disc / 100)).toFixed(2);
+      const discBadge = disc ? `<span class="disc">-${{Math.round(disc)}}%</span>` : '';
+      const avg = p.avg_rating
+        ? `<div style="margin-top:.3rem"><span class="stars">${{stars(p.avg_rating)}}</span> <small style="color:#94a3b8">${{p.review_count}} avis</small></div>`
+        : '';
+      return `<div class="prod-card" data-testid="product-card" data-id="${{p.id}}" onclick="openPanel(${{p.id}})">
+        <div class="prod-cat">${{p.category_name || 'Non classé'}}</div>
+        <div class="prod-name">${{p.name}}</div>
+        <div class="prod-desc">${{p.description || ''}}</div>
+        <div class="prod-foot">
+          <span class="prod-price">${{final}} € ${{discBadge}}</span>
+          <span class="stock" style="background:${{stockColor(p.stock)}}">Stock ${{p.stock}}</span>
+        </div>
+        ${{avg}}
+      </div>`;
+    }}
+
     async function loadProducts() {{
       try {{
         const products = await fetchJSON('/products');
-        const grid = document.getElementById('product-grid');
+        const container = document.getElementById('catalog-sections');
         if (!products.length) {{
-          grid.innerHTML = '<p class="empty">Aucun produit — ajoutez-en un.</p>';
+          container.innerHTML = '<p class="empty">Aucun produit — ajoutez-en un.</p>';
           return;
         }}
-        grid.innerHTML = products.map(p => {{
-          const disc = parseFloat(p.discount_pct || 0);
-          const final = (parseFloat(p.price) * (1 - disc / 100)).toFixed(2);
-          const discBadge = disc ? `<span class="disc">-${{Math.round(disc)}}%</span>` : '';
-          const avg = p.avg_rating ? `<span class="stars">${{stars(p.avg_rating)}}</span> <small style="color:#94a3b8">${{p.review_count}} avis</small>` : '';
-          return `<div class="prod-card" data-testid="product-card" data-id="${{p.id}}" onclick="openPanel(${{p.id}})">
-            <div class="prod-cat">${{p.category_name || 'Non classé'}}</div>
-            <div class="prod-name">${{p.name}}</div>
-            <div class="prod-desc">${{p.description || ''}}</div>
-            <div class="prod-foot">
-              <span class="prod-price">${{final}} € ${{discBadge}}</span>
-              <span class="stock" style="background:${{stockColor(p.stock)}}">Stock ${{p.stock}}</span>
+        const byCategory = {{}};
+        products.forEach(p => {{
+          const cat = p.category_name || 'Non classé';
+          if (!byCategory[cat]) byCategory[cat] = [];
+          byCategory[cat].push(p);
+        }});
+        const sorted = Object.keys(byCategory).sort();
+        container.innerHTML = sorted.map(cat => `
+          <div class="cat-section">
+            <div class="cat-title">
+              ${{cat}}
+              <span class="cat-count">${{byCategory[cat].length}} produit${{byCategory[cat].length > 1 ? 's' : ''}}</span>
             </div>
-            ${{avg}}
-          </div>`;
-        }}).join('');
+            <div class="grid" data-testid="product-grid">
+              ${{byCategory[cat].map(productCardHTML).join('')}}
+            </div>
+          </div>
+        `).join('');
       }} catch(e) {{
-        document.getElementById('product-grid').innerHTML = '<p class="error-msg">Erreur chargement produits</p>';
+        document.getElementById('catalog-sections').innerHTML = '<p class="error-msg">Erreur chargement produits</p>';
       }}
     }}
 
     async function openPanel(id) {{
       try {{
-        const [p, related] = await Promise.all([
+        const [p, relData] = await Promise.all([
           fetchJSON(`/products/${{id}}`),
-          fetchJSON(`/products/${{id}}/related`).catch(() => [])
+          fetchJSON(`/products/${{id}}/related`).catch(() => ({{products:[]}}))
         ]);
         const disc = parseFloat(p.discount_pct || 0);
         const final = (parseFloat(p.price) * (1 - disc / 100)).toFixed(2);
+
         document.getElementById('detail-name').textContent = p.name;
-        document.getElementById('detail-price').textContent = final + ' €' + (disc ? ` (-${{Math.round(disc)}}%)` : '');
+        document.getElementById('detail-price').textContent =
+          final + ' €' + (disc ? ` (-${{Math.round(disc)}}%)` : '');
         document.getElementById('detail-desc').textContent = p.description || '';
-        document.getElementById('detail-stock').textContent = `Stock : ${{p.stock}}`;
-        const relList = document.getElementById('related-list');
-        relList.innerHTML = related.length
+        document.getElementById('detail-stock').textContent =
+          `Catégorie : ${{p.category_name || '—'}}  ·  Stock : ${{p.stock}}`;
+
+        const reviews = p.reviews || [];
+        document.getElementById('reviews-list').innerHTML = reviews.length
+          ? reviews.map(r => `
+              <div class="review-item">
+                <div class="review-header">
+                  <span class="review-author">${{r.author}}</span>
+                  <span class="stars">${{stars(r.rating)}}</span>
+                </div>
+                ${{r.comment ? `<div class="review-comment">"${{r.comment}}"</div>` : ''}}
+              </div>`).join('')
+          : '<p style="font-size:.82rem;color:#cbd5e1">Aucun avis pour ce produit</p>';
+
+        const related = relData.products || relData || [];
+        document.getElementById('related-list').innerHTML = related.length
           ? related.map(r => `<div class="related-item" onclick="openPanel(${{r.id}})">${{r.name}} — ${{parseFloat(r.price).toFixed(2)}} €</div>`).join('')
           : '<p style="font-size:.82rem;color:#cbd5e1">Aucun produit similaire</p>';
+
         document.getElementById('panel-overlay').classList.add('open');
       }} catch(e) {{}}
     }}
@@ -240,7 +291,7 @@ def index(path):
         document.getElementById('f-name').value = '';
         document.getElementById('f-price').value = '';
         loadProducts(); loadStats();
-      }} catch(e) {{ err.textContent = 'Erreur lors de l\'ajout.'; }}
+      }} catch(e) {{ err.textContent = "Erreur lors de l\\'ajout."; }}
     }}
 
     loadStats(); loadCategories(); loadProducts();
