@@ -439,7 +439,7 @@ def api_related_products(product_id):
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({"version": "3.0.0", "feature": "frontend-with-e2e"})
+    return jsonify({"version": "3.1.0", "feature": "v0.13.6-per-test-db-restore"})
 
 
 if __name__ == "__main__":
