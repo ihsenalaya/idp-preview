@@ -1,58 +1,129 @@
-# idp-testing
+# idp-testing — Cellenza Preview Platform
 
-Demo application for validating the Cellenza preview environment workflow.  
-Each pull request gets an isolated Kubernetes environment with a **React-style frontend** and a **Python API backend**, their own PostgreSQL database, a public URL, and automatic GitHub Deployment status. Traces are collected by OpenTelemetry and visible in Jaeger.
-
----
-
-## Architecture
-
-```
-PR opened / updated
-       │
-       ▼
-GitHub Actions (preview.yaml) — self-hosted runner inside the cluster
-       │
-       ├─ Kaniko ──► builds single image ──► pushes to GHCR
-       │             (APP_MODE=frontend → frontend.py / default → app.py)
-       ├─ github.rest.repos.createDeployment() ──► returns deploymentId
-       ├─ kubectl apply secret (CELLENZA_GITHUB_TOKEN)
-       └─ kubectl apply Cellenza CR ──► spec.services[] (multi-service)
-                                        spec.testSuite.enabled = true
-                              │
-                              ▼
-                    Cellenza Operator (reconcile loop)
-                              │
-              ┌───────────────┼──────────────────────────────┐
-         Namespace        PostgreSQL                    OTel injection
-         svc-backend    (init_db on start)           (auto-instrumentation)
-         svc-frontend    Secret + Service                    │
-         Ingress*:                                           ▼
-           /api  → svc-backend:8080              Jaeger (traces)
-           /     → svc-frontend:3000
-         ResourceQuota
-              │
-              ├─ Phase Provisioning → GitHub: in_progress + PR comment
-              ├─ Phase Running      → runs test pipeline sequentially:
-              │                         step 1: suite-checkpoint-save (pg_dump → ConfigMap)
-              │                         step 2: smoke-tests (built-in, targets backend)
-              │                         step 3: suite-restore-regression (TRUNCATE + replay)
-              │                         step 4: regression-tests (/app/tests/regression.py)
-              │                         step 5: suite-restore-e2e (TRUNCATE + replay)
-              │                         step 6: e2e-tests (/app/tests/e2e.py, Playwright)
-              │                                   └── reset_db() before each test
-              │                       → GitHub: success + URL + PR comment
-              │                       → PR comment with test results table
-              └─ Phase Terminating  → GitHub: inactive
-
-PR closed → cleanup.yaml → kubectl delete Cellenza → finalizer teardown
-
-* ingress-nginx must be installed with admissionWebhooks.enabled=false (see Step 3)
-```
+Demo application and reference implementation for the **Cellenza Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, and AI-generated seed data.
 
 ---
 
-## Prerequisites
+## Table of Contents
+
+1. [General Architecture](#1-general-architecture)
+2. [Prerequisites](#2-prerequisites)
+3. [Cluster Installation](#3-cluster-installation)
+4. [The Cellenza Custom Resource](#4-the-cellenza-custom-resource)
+5. [Controller Deep Dive](#5-controller-deep-dive)
+6. [Test Suite Orchestration](#6-test-suite-orchestration)
+7. [AI Enrichment Orchestration](#7-ai-enrichment-orchestration)
+8. [GitHub Integration](#8-github-integration)
+9. [Copilot Extension](#9-copilot-extension)
+10. [Application Reference](#10-application-reference)
+11. [Troubleshooting](#11-troubleshooting)
+
+---
+
+## 1. General Architecture
+
+### End-to-end workflow — from PR to TTL expiry or close
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  Developer                                                                      │
+│   git push origin feat/my-feature                                               │
+│   gh pr create                                                                  │
+└────────────────────────────┬────────────────────────────────────────────────────┘
+                             │ pull_request: opened / synchronize / reopened
+                             ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  GitHub Actions  (.github/workflows/preview.yaml)                               │
+│  runs-on: [self-hosted, kind]  ← runner pod inside the cluster                 │
+│                                                                                 │
+│  1. Kaniko Job  ──────► build image from git HEAD ──► push to GHCR             │
+│  2. github.rest.repos.createDeployment() ──► returns deploymentId              │
+│  3. kubectl apply Secret (CELLENZA_GITHUB_TOKEN)                                │
+│  4. kubectl apply Cellenza CR ──► name: pr-<N>                                 │
+│  5. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
+└────────────────────────────┬────────────────────────────────────────────────────┘
+                             │ CR created / updated in etcd
+                             ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  Cellenza Operator  (controller-runtime reconcile loop)                         │
+│                                                                                 │
+│  PHASE: Pending ──► (requiresApproval gate)                                    │
+│                                                                                 │
+│  PHASE: Provisioning                                                            │
+│    ├── Create Namespace      preview-pr-<N>                                    │
+│    ├── Create ResourceQuota  (tier: small / medium / large)                    │
+│    ├── Provision PostgreSQL  (Deployment + Service + Secret)                   │
+│    ├── Run Migration Job     (optional — if spec.database.migration)           │
+│    ├── Run Seed Job          (optional — if spec.database.seed)                │
+│    ├── Deploy Services       svc-backend (app.py:8080) + svc-frontend (3000)  │
+│    ├── Create Ingress        /api → backend   / → frontend                    │
+│    ├── Inject OTel           annotation → sidecar injected by OTel operator    │
+│    └── Post GitHub comment   "🔄 Provisioning en cours…"                      │
+│                                                                                 │
+│  PHASE: Running                                                                 │
+│    ├── Post GitHub Deployment: success + URL                                   │
+│    ├── Post PR comment: "## Cellenza Preview Ready"                            │
+│    │                                                                            │
+│    ├── [AI ENRICHMENT — runs first, blocks tests until done]                  │
+│    │     step 1: schema-dump Job   ──► pg_dump --schema-only                  │
+│    │     step 2: ai-generate Job   ──► call LLM → seed.sql + test.py          │
+│    │     step 3: ai-seed Job       ──► psql seed.sql → 10 products, reviews  │
+│    │     step 4: ai-tests Job      ──► python test.py                         │
+│    │                                                                            │
+│    └── [TEST SUITE — starts only after AI enrichment Succeeded or Failed]     │
+│          step 1: suite-checkpoint-save     ──► pg_dump → ConfigMap            │
+│          step 2: smoke-tests               ──► /healthz + /api/products       │
+│          step 3: suite-restore-regression  ──► TRUNCATE + psql replay         │
+│          step 4: regression-tests          ──► tests/regression.py            │
+│          step 5: suite-restore-e2e         ──► TRUNCATE + psql replay         │
+│          step 6: e2e-tests (Playwright)    ──► tests/e2e.py                   │
+│                                                                                 │
+│  PHASE: Terminating                                                             │
+│    ├── Delete all namespace resources                                          │
+│    ├── Delete namespace                                                        │
+│    └── GitHub Deployment: inactive                                             │
+└────────────────────────────┬────────────────────────────────────────────────────┘
+                             │
+          ┌──────────────────┼──────────────────────┐
+          │                  │                       │
+          ▼                  ▼                       ▼
+    PR merged /        TTL expired             @cellenza
+    PR closed          (default 48h)           retest-ai
+          │                  │                       │
+          └──────────────────┘                       │
+                   │                                 │
+    cleanup.yaml   │                         AI-only rerun cycle
+    kubectl delete Cellenza ◄────────────┐   (skips smoke/regression/e2e)
+    finalizer teardown                   │
+    GitHub Deployment: inactive          │
+                                         └─ spec.aiEnrichment.rerunRequested=true
+```
+
+### Namespace isolation per PR
+
+```
+cluster
+├── cellenza-operator-system/          ← operator + extension
+│     └── cellenza-operator pod
+├── github-runner/                     ← self-hosted Actions runner + Kaniko jobs
+├── observability/                     ← Jaeger + OTel Collector + Instrumentation
+│
+├── preview-pr-1/                      ┐
+│     ├── svc-backend  (app.py:8080)   │  isolated namespace
+│     ├── svc-frontend (frontend:3000) │  one per open PR
+│     ├── postgres                     │
+│     ├── Ingress (pr-1.preview.*)     │
+│     └── Jobs (test/AI/restore…)      ┘
+│
+├── preview-pr-2/                      ┐
+│     └── (same structure)             │  PR #2 is completely independent
+│                                      ┘
+└── preview-pr-N/ …
+```
+
+---
+
+## 2. Prerequisites
 
 | Tool | Version | Install |
 |------|---------|---------|
@@ -64,9 +135,11 @@ PR closed → cleanup.yaml → kubectl delete Cellenza → finalizer teardown
 
 ---
 
-## Step 0 — Add Helm repositories
+## 3. Cluster Installation
 
-Run this once before any install step. This avoids "chart not found" errors caused by stale or missing repo indexes.
+### Step 0 — Add Helm repositories
+
+Run once before any install step.
 
 ```bash
 helm repo add jetstack       https://charts.jetstack.io
@@ -75,20 +148,16 @@ helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm
 helm repo update
 ```
 
----
-
-## Step 1 — Create the Kind cluster
+### Step 1 — Create the Kind cluster
 
 ```bash
 kind create cluster --name testing
 kubectl get nodes
 # NAME                    STATUS   ROLES           AGE   VERSION
-# testing-control-plane   Ready    control-plane   ...   v1.35.0
+# testing-control-plane   Ready    control-plane   …     v1.35.0
 ```
 
----
-
-## Step 2 — Install cert-manager
+### Step 2 — Install cert-manager
 
 ```bash
 helm install cert-manager jetstack/cert-manager \
@@ -102,14 +171,11 @@ kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
 kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
 ```
 
----
+### Step 3 — Install ingress-nginx
 
-## Step 3 — Install ingress-nginx
+> Do **not** pin a version — older releases are removed from the repo index over time.
 
-> Do not pin a specific version — older pinned versions (e.g. `4.15.1`) are removed from the repo index over time.
-
-**Important:** disable admission webhooks. In a Kind cluster the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with:
-`x509: certificate signed by unknown authority`
+**Important:** disable admission webhooks. In Kind, the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with `x509: certificate signed by unknown authority`.
 
 ```bash
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
@@ -121,7 +187,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 ```
 
-If ingress-nginx was already installed without this flag, reinstall it:
+If already installed without this flag:
 
 ```bash
 helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
@@ -129,15 +195,12 @@ helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.admissionWebhooks.enabled=false \
   --wait
 
-# Remove the stale webhook if it still exists
 kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
 ```
 
-**WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the preview](#accessing-the-preview)).
+> **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the Preview](#accessing-the-preview)).
 
----
-
-## Step 4 — Install the Cellenza Operator
+### Step 4 — Install the Cellenza Operator
 
 The chart is published as an OCI artifact on GHCR (public, no login required).
 
@@ -153,11 +216,25 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator 
 kubectl get crd cellenzas.platform.company.io
 ```
 
----
+#### Upgrading the operator
 
-## Step 5 — Install OpenTelemetry Operator
+```bash
+# Always apply the CRD first — Helm does NOT update CRDs automatically
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.8 \
+  | tail -n +3 \
+  | kubectl apply -f -
 
-> Do not pin a specific version — `0.110.0` is no longer in the repo index.
+helm upgrade cellenza-operator \
+  oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
+  --version 0.13.8 \
+  --namespace cellenza-operator-system
+
+kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
+```
+
+> `tail -n +3` strips the two-line Helm OCI pull header that `helm show crds` prepends.
+
+### Step 5 — Install OpenTelemetry Operator
 
 ```bash
 helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
@@ -170,9 +247,7 @@ helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
 kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry-operator --timeout=120s
 ```
 
----
-
-## Step 6 — Deploy Jaeger and OTel Collector
+### Step 6 — Deploy Jaeger and OTel Collector
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/jaeger.yaml
@@ -180,28 +255,22 @@ kubectl -n observability rollout status deployment/jaeger --timeout=120s
 
 kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/otel.yaml
 kubectl -n observability rollout status deployment/otel-collector --timeout=120s
-```
 
-Verify:
-
-```bash
 kubectl get otelcol -n observability
 kubectl get instrumentation -n observability
 ```
 
----
+### Step 7 — Deploy the self-hosted GitHub Actions runner
 
-## Step 7 — Deploy the self-hosted GitHub Actions runner
+#### 7.1 Generate a runner registration token
 
-### 7.1 Generate a runner registration token
-
-> Tokens expire after **1 hour**. Regenerate if the runner pod restarts.
+> Tokens expire after **1 hour**. Regenerate whenever the runner pod restarts.
 
 ```bash
-gh api -X POST repos/<YOUR_OWNER>/<YOUR_REPO>/actions/runners/registration-token --jq '.token'
+gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token'
 ```
 
-### 7.2 Create and apply `runner.yaml`
+#### 7.2 Apply runner.yaml
 
 Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, `<TOKEN>`:
 
@@ -286,46 +355,37 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected last line: "Listening for Jobs"
 ```
 
-> **Note:** The image `myoung34/github-runner:latest` is ~1 GB. The first pull can take several minutes inside a Kind cluster. If the rollout times out, wait and re-run the rollout status command.
+> **Note:** `myoung34/github-runner:latest` is ~1 GB. The first pull can take several minutes inside Kind.
 
-### 7.3 Set the GitHub Actions secret `CELLENZA_GITHUB_TOKEN`
-
-The preview workflow uses this secret to authenticate with GHCR (Kaniko push) and to let the operator update GitHub Deployments.
+#### 7.3 Set the GitHub Actions secret
 
 ```bash
 gh secret set CELLENZA_GITHUB_TOKEN \
-  --repo <YOUR_OWNER>/<YOUR_REPO> \
+  --repo <OWNER>/<REPO> \
   --body "<YOUR_GITHUB_PAT>"
 ```
 
-**This step is mandatory.** Without it, the Kaniko image push to GHCR will hang indefinitely and the workflow will time out.
-
-Minimum token permissions (classic PAT or fine-grained):
+Minimum token permissions:
 
 | Permission | Level |
 |---|---|
-| `write:packages` | Required — Kaniko pushes the image to GHCR |
+| `write:packages` | Required — Kaniko pushes to GHCR |
 | `Contents` | read |
 | `Pull requests` | read |
 | `Issues` | write |
 | `Deployments` | write |
 
-### 7.4 Create cluster secrets
+#### 7.4 Create the operator secret
 
 ```bash
-# Token used by the operator to update GitHub Deployments and post PR comments
 kubectl create secret generic cellenza-github-token \
   --namespace cellenza-operator-system \
   --from-literal=token="<YOUR_GITHUB_PAT>"
 ```
 
----
+#### 7.5 Configure AI enrichment (optional)
 
-## Step 7.5 — Configure AI Enrichment (optional)
-
-Skip this step if you do not need AI-generated seed data and tests.
-
-### Using GitHub Models (free tier)
+**GitHub Models (free tier)**
 
 ```bash
 kubectl create secret generic ai-api-key \
@@ -335,40 +395,32 @@ kubectl create secret generic ai-api-key \
 kubectl set env deployment/cellenza-operator \
   AI_API_URL=https://models.inference.ai.azure.com \
   -n cellenza-operator-system
-
-kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=60s
 ```
 
-### Using OpenAI
+**OpenAI**
 
 ```bash
 kubectl create secret generic ai-api-key \
   --namespace cellenza-operator-system \
   --from-literal=api-key="sk-..."
+# No AI_API_URL override needed — the operator default is https://api.openai.com/v1
 ```
 
-> No `AI_API_URL` override needed for OpenAI — the operator default points to `https://api.openai.com/v1`.
-
----
-
-## Step 8 — Open a pull request
+#### Renew runner token (when token expires)
 
 ```bash
-git checkout -b my-feature
-echo "# test" >> app.py
-git add app.py
-git commit -m "test: trigger preview"
-git push origin my-feature
-gh pr create --title "test: trigger preview" --body "Testing the preview flow"
+NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
+kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
+kubectl rollout restart deployment/github-runner -n github-runner
+kubectl logs -n github-runner deployment/github-runner --tail=5
+# Expected: "Listening for Jobs"
 ```
-
-> **Important:** Do not modify `.github/workflows/` files in your PR branch.
 
 ---
 
-## Complete Cellenza CR example
+## 4. The Cellenza Custom Resource
 
-This is the full CR applied by `preview.yaml`. It shows every operator feature including multi-service.
+### Complete annotated example
 
 ```yaml
 apiVersion: platform.company.io/v1alpha1
@@ -376,23 +428,24 @@ kind: Cellenza
 metadata:
   name: pr-42
 spec:
-  # ── Identity ──────────────────────────────────────────────────────────────
+
+  # ── Identity ───────────────────────────────────────────────────────────────
   branch: feature/my-feature
   prNumber: 42
-  image: ghcr.io/ihsenalaya/idp-testing:sha-abc  # required by webhook, ignored when services[] is set
-  ttl: 48h
-  resourceTier: medium        # small | medium | large
+  image: ghcr.io/ihsenalaya/idp-testing:sha-abc   # ignored when services[] is set
+  ttl: 48h                                          # default 48h — supports: 1h 24h 72h etc.
+  resourceTier: medium                              # small | medium | large
 
-  # ── Multi-service (frontend + backend) ───────────────────────────────────
+  # ── Multi-service (frontend + backend) ────────────────────────────────────
   services:
     - name: backend
       image: ghcr.io/ihsenalaya/idp-testing:sha-abc
       port: 8080
-      pathPrefix: /api          # ingress routes /api/* → this service
+      pathPrefix: /api          # ingress routes /api/* → svc-backend:8080
     - name: frontend
       image: ghcr.io/ihsenalaya/idp-testing:sha-abc
       port: 3000
-      pathPrefix: /             # ingress routes /* → this service
+      pathPrefix: /             # ingress routes /* → svc-frontend:3000
       env:
         - name: APP_MODE
           value: frontend       # switches entrypoint to frontend.py
@@ -401,17 +454,20 @@ spec:
         - name: PREVIEW_BRANCH
           value: feature/my-feature
 
-  # ── Approval gate (optional) ──────────────────────────────────────────────
+  # ── Approval gate (optional) ───────────────────────────────────────────────
   requiresApproval: false
-  # approvedBy: platform-team # unblocks provisioning when requiresApproval=true
+  # approvedBy: platform-team  # unblocks when requiresApproval=true
 
-  # ── Database ──────────────────────────────────────────────────────────────
+  # ── Database ───────────────────────────────────────────────────────────────
   database:
     enabled: true
     databaseName: appdb
-    # init_db() is called by the backend on startup — no migration job needed
+    # migration:
+    #   enabled: true           # runs an Alembic Job (optional)
+    # seed:
+    #   enabled: true           # runs a static seed Job (optional)
 
-  # ── Telemetry ─────────────────────────────────────────────────────────────
+  # ── Telemetry ──────────────────────────────────────────────────────────────
   telemetry:
     enabled: true
     serviceName: idp-testing-pr-42
@@ -419,47 +475,47 @@ spec:
       language: python
       instrumentationRef: observability/python
 
-  # ── Test Suite ────────────────────────────────────────────────────────────
+  # ── Test Suite ─────────────────────────────────────────────────────────────
   testSuite:
     enabled: true
-    smoke: {}                   # built-in — targets backend /healthz + /api/products
+    smoke: {}                   # built-in — no config needed
     regression:
-      enabled: true             # runs /app/tests/regression.py via backend image
+      enabled: true             # runs /app/tests/regression.py
     e2e:
-      enabled: true             # runs /app/tests/e2e.py with Playwright
+      enabled: true             # runs /app/tests/e2e.py (Playwright/Chromium)
 
-  # ── GitHub integration ────────────────────────────────────────────────────
+  # ── AI Enrichment ──────────────────────────────────────────────────────────
+  aiEnrichment:
+    enabled: true
+    apiSecretRef:
+      name: ai-api-key
+      key: api-key
+    githubTokenSecretRef:
+      name: cellenza-github-token
+      namespace: cellenza-operator-system
+      key: token
+    model: gpt-4o-mini          # gpt-4o-mini (fast + cheap) | gpt-4o (better quality)
+    seed:
+      enabled: true             # generates + runs seed.sql
+    tests:
+      enabled: true             # generates + runs test.py
+    # rerunRequested: true      # set by @cellenza retest-ai — triggers AI-only rerun
+
+  # ── GitHub integration ─────────────────────────────────────────────────────
   github:
     enabled: true
     owner: ihsenalaya
     repo: idp-testing
-    deploymentId: 123456789   # returned by github.rest.repos.createDeployment()
+    deploymentId: 123456789     # returned by github.rest.repos.createDeployment()
     environment: pr-42
     commentOnReady: true
     tokenSecretRef:
       name: cellenza-github-token
       namespace: cellenza-operator-system
       key: token
-
-  # ── AI Enrichment ─────────────────────────────────────────────────────────
-  aiEnrichment:
-    enabled: true
-    apiSecretRef:
-      name: ai-api-key        # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
-      key: api-key
-    githubTokenSecretRef:
-      name: cellenza-github-token
-      namespace: cellenza-operator-system
-      key: token
-    model: gpt-4o-mini        # gpt-4o-mini (fast + cheap), gpt-4o (better quality)
-    seed:
-      enabled: true           # runs ai-seed Job: psql seed.sql against the preview DB
-    tests:
-      enabled: true           # runs ai-tests Job: python test.py with APP_URL=http://app:80
-    # rerunRequested: true    # set by @cellenza retest-ai — operator replays the AI-only cycle
 ```
 
-### Environment variables injected automatically
+### Environment variables injected automatically into every service pod
 
 | Variable | Value |
 |---|---|
@@ -470,30 +526,107 @@ spec:
 | `PREVIEW_BRANCH` | `feature/my-feature` |
 | `PREVIEW_PR` | `42` |
 | `OTEL_SERVICE_NAME` | `idp-testing-pr-42` |
-| `OTEL_RESOURCE_ATTRIBUTES` | `cellenza.name=pr-42,cellenza.pr_number=42,...` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `cellenza.name=pr-42,cellenza.pr_number=42,…` |
+
+### Resource tiers
+
+| Tier | CPU request | CPU limit | Memory request | Memory limit |
+|------|-------------|-----------|----------------|--------------|
+| `small` | 50m | 200m | 64Mi | 256Mi |
+| `medium` | 100m | 500m | 128Mi | 512Mi |
+| `large` | 250m | 1000m | 256Mi | 1Gi |
 
 ### Lifecycle phases
 
 ```
-Pending       → waiting for approval (requiresApproval: true)
-Provisioning  → namespace, PostgreSQL, migration, seed running
-Running       → all resources ready, URL reachable
-Terminating   → PR closed, finalizer cleaning up
-Failed        → reconciliation error (diagnostics + pod logs in status)
+Pending       → requiresApproval=true, waiting for approvedBy to be set
+Provisioning  → namespace, PostgreSQL, services, ingress being created
+Running       → all resources ready, URL reachable, AI + tests executing
+Terminating   → PR closed / TTL expired, finalizer tearing down namespace
+Failed        → reconcile error — diagnostics + pod logs captured in status
 ```
 
 ---
 
-## Inspect environment status
+## 5. Controller Deep Dive
+
+### Reconcile loop — step by step
+
+The controller uses **controller-runtime** and follows the standard Kubernetes reconciler pattern. Every event (CR create/update, owned resource change, requeue timer) triggers a reconcile call. The function is fully **idempotent** — re-running it at any step produces the same result.
+
+```
+Reconcile(ctx, req)
+     │
+     ├── 1. Fetch Cellenza CR  (return nil if NotFound)
+     │
+     ├── 2. Deletion?  ──► handleDeletion()
+     │         └── remove namespace, owned resources, then remove finalizer
+     │
+     ├── 3. Add finalizer if missing  (guarantees teardown runs on delete)
+     │
+     ├── 4. TTL expired?  ──► patch status Expired + r.Delete(cellenza)
+     │
+     ├── 5. Approval gate?  ──► return RequeueAfter=30s  (phase=Pending)
+     │
+     ├── 6. reconcileNamespace()     ──► create preview-pr-<N>
+     │
+     ├── 7. reconcileResourceQuota() ──► apply tier limits
+     │
+     ├── 8. reconcileDatabase()      ──► postgres Deployment + Service + Secret
+     │         ├── wait DB ready (RequeueAfter=5s if not)
+     │         ├── reconcileMigration() (optional Job)
+     │         └── reconcileSeed()     (optional Job)
+     │
+     ├── 9. reconcileServices()      ──► one Deployment + Service per spec.services[]
+     │
+     ├── 10. reconcileIngress()      ──► nginx Ingress, path rules from pathPrefix
+     │
+     ├── 11. reconcileTelemetry()    ──► inject OTel annotation on pods
+     │
+     ├── 12. reconcileGitHub()       ──► Deployment status + PR comment (idempotent)
+     │
+     ├── 13. [phase = Running]
+     │
+     ├── 14. reconcileAIEnrichment() ──► (if enabled)
+     │         └── see §7 for full detail
+     │
+     └── 15. reconcileTestSuite()    ──► (if enabled AND AI done or disabled)
+               └── see §6 for full detail
+```
+
+### All Jobs created by the controller
+
+The controller never runs long operations inline — it delegates every side-effectful operation to a **Kubernetes Job**, then re-enters the reconcile loop to check completion.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Job name                  │ Image         │ What it does                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  postgres-migrate          │ app image     │ Alembic migration (optional)   │
+│  postgres-seed             │ app image     │ static SQL seed (optional)     │
+│                             │               │                                │
+│  ── AI Enrichment ──────────┼───────────────┼──────────────────────────────│
+│  ai-schema-dump            │ postgres:15   │ pg_dump --schema-only          │
+│  ai-generate               │ python:3.11   │ call LLM → seed.sql + test.py  │
+│  ai-seed                   │ postgres:15   │ psql seed.sql → inserts data   │
+│  ai-tests                  │ python:3.11   │ pip install + python test.py   │
+│                             │               │                                │
+│  ── Test Suite ─────────────┼───────────────┼──────────────────────────────│
+│  suite-checkpoint-save     │ postgres:15   │ pg_dump --data-only → ConfigMap│
+│  smoke-tests               │ python:3.11   │ embedded smoke script          │
+│  suite-restore-regression  │ postgres:15   │ TRUNCATE + psql replay         │
+│  regression-tests          │ app image     │ tests/regression.py            │
+│  suite-restore-e2e         │ postgres:15   │ TRUNCATE + psql replay         │
+│  e2e-tests                 │ playwright    │ tests/e2e.py + Chromium        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Status as the source of truth
+
+The controller tracks all progress in `status` — persisted in etcd. If the operator pod restarts mid-pipeline, it resumes exactly where it left off by reading the status fields.
 
 ```bash
-# Overview
-kubectl get cz
-# NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
-# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me...   2026-05-01T10:00:00Z   2h
-
-# Full status
-kubectl get cz pr-42 -o jsonpath='{.status}' | jq .
+kubectl get cellenza pr-42 -o jsonpath='{.status}' | jq .
 ```
 
 ```json
@@ -501,215 +634,208 @@ kubectl get cz pr-42 -o jsonpath='{.status}' | jq .
   "phase": "Running",
   "url": "http://pr-42.preview.localtest.me:8080",
   "namespaceName": "preview-pr-42",
-  "readyAt": "2026-04-29T10:00:00Z",
-  "expiresAt": "2026-05-01T10:00:00Z",
+  "readyAt": "2026-05-08T09:00:00Z",
+  "expiresAt": "2026-05-10T09:00:00Z",
   "database": {
     "ready": true,
     "host": "postgres",
     "databaseName": "appdb",
     "migration": "Succeeded",
-    "seed": "Succeeded"
-  },
-  "github": {
-    "deploymentState": "success",
-    "lastNotifiedPhase": "Running",
-    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080",
-    "commentId": 987654321
+    "seed": "Skipped"
   },
   "aiEnrichment": {
     "phase": "Succeeded",
     "seedStatus": "Succeeded",
     "testsStatus": "Succeeded",
-    "testResults": ["PASS: test_health", "PASS: test_create_product", "PASS: test_stats"],
-    "completedAt": "2026-05-01T12:00:00Z"
+    "completedAt": "2026-05-08T09:05:00Z"
+  },
+  "tests": {
+    "phase": "Succeeded",
+    "step": "e2e",
+    "smoke":      { "phase": "Succeeded", "passed": 2, "failed": 0 },
+    "regression": { "phase": "Succeeded", "passed": 9, "failed": 0 },
+    "e2e":        { "phase": "Succeeded", "passed": 6, "failed": 0 }
+  },
+  "github": {
+    "deploymentState": "success",
+    "lastNotifiedPhase": "Running",
+    "commentId": 987654321,
+    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080"
   }
 }
 ```
 
----
+### Key controller invariants
 
-## GitHub Integration
+| Invariant | Why |
+|-----------|-----|
+| All operations are idempotent | Re-running reconcile after a crash is safe |
+| Jobs are looked up by name before creation | Prevents duplicate jobs |
+| Status is written after every significant state change | Enables crash recovery |
+| AI enrichment must complete before tests start | Tests need seeded data |
+| `status.tests.step` is persisted in etcd | Pipeline resumes at exact step after restart |
+| CRD schema must match Go types exactly | API server silently strips unknown fields — a mismatch causes infinite loops |
 
-The operator calls the GitHub API directly from its reconciliation loop — no external webhook needed.
-
-### Phase → GitHub Deployment state mapping
-
-| Phase | GitHub state | PR comment |
-|---|---|---|
-| `Pending` | `queued` | — |
-| `Provisioning` | `in_progress` | `🔄 Provisioning en cours...` |
-| `Running` | `success` + URL | `## Cellenza Preview Ready` + URL + DB evidence |
-| `Failed` | `failure` | `## Cellenza Preview Failed` + diagnostics + pod logs |
-| `Terminating` | `inactive` | — (posted by cleanup.yaml) |
-
-### Idempotence
-
-Before every API call the operator checks `status.github.deploymentState`, `lastNotifiedPhase`, and `commentId`. If already written → zero API call, even across multiple reconcile loops.
+### Inspecting the pipeline
 
 ```bash
-# Current GitHub state
-kubectl get cz pr-42 -o jsonpath='{.status.github}' | jq .
+# Quick overview
+kubectl get cellenza
+# NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
+# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me…    2026-05-10T09:00:00Z   2h
 
-# Non-blocking errors
-kubectl get cz pr-42 -o jsonpath='{.status.github.lastError}'
-```
+# Current pipeline step
+kubectl get cellenza pr-42 -o jsonpath='{.status.tests.step}'
 
-### spec fields
+# Watch jobs being created
+kubectl get jobs -n preview-pr-42 -w
 
-```yaml
-spec:
-  github:
-    enabled: true
-    owner: ihsenalaya
-    repo: idp-testing
-    deploymentId: 123456789
-    environment: pr-42
-    commentOnReady: true
-    tokenSecretRef:
-      name: github-token-pr-42
-      namespace: cellenza-operator-system
-      key: token
+# Diagnostics on failure
+kubectl get cellenza pr-42 -o jsonpath='{.status.diagnostics}' | jq .
 ```
 
 ---
 
-## Automated Test Suite
+## 6. Test Suite Orchestration
 
-The Cellenza operator runs **smoke, regression, and E2E tests sequentially** after the preview environment is ready. A database checkpoint is saved once after the AI seed, then restored before each suite — and again before each individual E2E test — so every test always starts from an identical, known baseline.
+### Why sequential, isolated, checkpoint-based
 
-### Full pipeline
+A classic shared staging environment has two fatal problems:
 
-```
-AI enrichment seed (10 products, 3 categories, reviews)
-       │
-       ▼
-[Job] suite-checkpoint-save          ← pg_dump --data-only → ConfigMap "db-checkpoint-after-seed"
-       │
-       ▼
-[Job] smoke-tests                    ← probes /healthz + /api/products (operator-embedded)
-       │
-       ▼
-[Job] suite-restore-regression       ← TRUNCATE all tables + psql replay
-       │
-       ▼
-[Job] regression-tests               ← tests/regression.py from the app image
-       │
-       ▼
-[Job] suite-restore-e2e              ← TRUNCATE + psql replay (DB back to post-seed state)
-       │
-       ▼
-[Job] e2e-tests (Playwright/Chromium)
-         │
-         ├── reset_db() → restore before test_catalog_page_loads
-         ├── reset_db() → restore before test_product_detail_panel
-         ├── reset_db() → restore before test_discount_filter
-         └── reset_db() → restore before each subsequent test
-```
+- **Cross-PR pollution** — two PRs running simultaneously share the database; test data from PR #28 corrupts the assertions of PR #29.
+- **Unstable data** — staging accumulates data from previous runs; a test that expects 10 products may find 247.
 
-### Two levels of DB isolation
+The Cellenza controller solves both by giving each PR its own namespace + database, and by taking a **checkpoint** of the database immediately after the AI seed — then restoring to that checkpoint before every test suite, and again before every individual E2E test.
 
-| Level | Mechanism | Purpose |
-|-------|-----------|---------|
-| **Between suites** | `suite-restore-regression`, `suite-restore-e2e` jobs | Prevents regression suite from polluting E2E (e.g. modified stock, created orders) |
-| **Between each E2E test** | `reset_db()` in `tests/e2e.py` | Ensures each Playwright test sees exactly the same data regardless of execution order |
-
-### How reset_db() works
-
-The e2e pod receives a `CHECKPOINT_API` environment variable injected by the operator. Before each test, the script calls:
+### Full pipeline chronology
 
 ```
-POST http://cellenza-extension.../api/previews/pr-42/checkpoints/after-seed/restore
+                     ┌─────────────────────────────────────────────────────┐
+                     │  Database state after AI seed                        │
+                     │  10 products, 3 categories, reviews, orders          │
+                     └───────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: suite-checkpoint-save                           │
+                    │  pg_dump --data-only → ConfigMap "db-checkpoint-      │
+                    │  after-seed" in namespace preview-pr-<N>             │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: smoke-tests                                     │
+                    │  Image: python:3.11  (embedded smoke script)          │
+                    │  APP_URL=http://svc-backend:8080                      │
+                    │  Tests:                                               │
+                    │    PASS smoke /healthz: 200                          │
+                    │    PASS smoke /api/products: 200                     │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: suite-restore-regression                        │
+                    │  TRUNCATE all tables + psql replay from ConfigMap     │
+                    │  → DB back to post-seed state                         │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: regression-tests                                │
+                    │  Image: app image                                     │
+                    │  APP_URL=http://svc-backend:8080                      │
+                    │  FRONTEND_URL=http://svc-frontend:3000                │
+                    │  Script: /app/tests/regression.py                    │
+                    │  Tests: 9 HTTP endpoint assertions                    │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: suite-restore-e2e                               │
+                    │  TRUNCATE + psql replay                               │
+                    │  → DB back to post-seed state                         │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: e2e-tests                                       │
+                    │  Image: mcr.microsoft.com/playwright/python:v1.44.0  │
+                    │  APP_URL=http://svc-frontend:3000                     │
+                    │  FRONTEND_URL=http://svc-frontend:3000                │
+                    │  CHECKPOINT_API=http://cellenza-extension:8090/…     │
+                    │                                                       │
+                    │  test_catalog_page_loads    ← reset_db() first       │
+                    │  test_preview_badge_shown   ← reset_db() first       │
+                    │  test_product_detail_panel  ← reset_db() first       │
+                    │  test_related_section       ← reset_db() first       │
+                    │  test_discount_filter       ← reset_db() first       │
+                    │  test_close_detail          ← reset_db() first       │
+                    └───────────────────────────────────────────────────────┘
 ```
 
-The extension patches the CR (`spec.database.checkpointRestore = "after-seed"`). The controller creates a Kubernetes Job that runs `TRUNCATE` + `psql` replay, then returns HTTP 200. The Playwright test only starts once the restore is complete.
+### Two levels of database isolation
 
-```python
-# tests/e2e.py
-CHECKPOINT_API  = os.environ.get("CHECKPOINT_API", "")
-CHECKPOINT_NAME = "after-seed"
+```
+Level 1: between suites
+  suite-restore-regression  ──► full TRUNCATE + replay before regression
+  suite-restore-e2e         ──► full TRUNCATE + replay before E2E
+  Reason: regression tests can create/delete products, change stock, create
+          orders — any of that would break E2E assertions.
 
-def reset_db():
-    """Restore DB to post-seed state. Non-fatal if API is unavailable."""
-    if not CHECKPOINT_API:
-        return
-    try:
-        import requests
-        r = requests.post(f"{CHECKPOINT_API}/checkpoints/{CHECKPOINT_NAME}/restore", timeout=60)
-        if r.status_code not in (200, 404):
-            print(f"[db-reset] WARNING: restore returned {r.status_code}", flush=True)
-    except Exception as e:
-        print(f"[db-reset] WARNING: could not restore checkpoint: {e}", flush=True)
-
-def run(name, fn):
-    reset_db()          # clean DB guaranteed before every test
-    with sync_playwright() as p:
-        ...
+Level 2: between each E2E test
+  reset_db() in tests/e2e.py ──► POST CHECKPOINT_API/restore before each test
+  Reason: Playwright tests click, fill forms, navigate — a test that opens a
+          detail panel changes page state for the next test.
 ```
 
-### Role of the controller in orchestration
+### How reset_db() works in detail
 
-The controller is the orchestrator. It runs in a reconciliation loop and tracks progress via `status.tests.step`. If the cluster restarts or a job crashes, it resumes exactly where it left off — no state is lost. A classic bash script would be lost in that scenario.
+```
+e2e pod
+  │
+  ├── reset_db()  →  POST http://cellenza-extension/api/previews/pr-42/
+  │                       checkpoints/after-seed/restore
+  │
+  │   Extension patches CR:
+  │     spec.database.checkpointRestore = "after-seed"
+  │
+  │   Controller reconciles:
+  │     ├── creates restore Job (TRUNCATE + psql replay from ConfigMap)
+  │     ├── waits for Job completion
+  │     └── clears spec.database.checkpointRestore
+  │
+  │   Extension returns HTTP 200
+  │
+  └── Playwright test starts  (DB is now identical to post-seed state)
+```
+
+### Controller — how it tracks test progress
+
+The controller stores the current pipeline step in `status.tests.step`. Each reconcile call reads this field and creates the next job:
 
 ```
 Reconcile() → reads status.tests.step
-  "saving"             → creates pg_dump job, waits for completion, stores dump in ConfigMap
-  "smoke"              → creates smoke-tests job, waits for completion
-  "restore-regression" → creates restore job, waits for completion
-  "regression"         → creates regression-tests job, waits for completion
-  "restore-e2e"        → creates restore job, waits for completion
-  "e2e"                → creates e2e-tests job, waits for completion
+  ""                   → set step="saving", create pg_dump job
+  "saving"             → pg_dump job complete? → set step="smoke"
+  "smoke"              → smoke job complete?   → set step="restore-regression"
+  "restore-regression" → restore complete?     → set step="regression"
+  "regression"         → regression complete?  → set step="restore-e2e"
+  "restore-e2e"        → restore complete?     → set step="e2e"
+  "e2e"                → e2e complete?         → set tests.phase="Succeeded"
+                          job still running    → RequeueAfter=10s
 ```
 
-The `status.tests.step` field is persisted in etcd — making the pipeline crash-safe and idempotent.
+If a job is running, the controller returns `RequeueAfter=10s` and exits — it does not block the goroutine. The next reconcile checks job status again. This loop continues until the job finishes or fails.
 
-### What each test type validates
-
-| Type | What it tests | Why here vs CI |
-|------|--------------|----------------|
-| **Smoke** | `/health` + `/api/products` respond | Verifies the deployment itself succeeded |
-| **Regression** | All existing endpoints return expected status + structure | Catches regressions on a real DB, not mocked |
-| **E2E** | Complete user flows (browse → detail → related, discount filter) | Tests interactions between components on a real environment |
-
-### Why sequential rather than parallel
-
-In a classic shared staging environment, running regression and E2E tests has two major problems: **cross-PR pollution** (two PRs running simultaneously share the same database) and **unstable data** (staging accumulates data from previous test runs).
-
-The Cellenza controller solves both:
-
-- **Complete isolation**: each PR has its own namespace, its own database, its own credentials. Tests from PR #28 never interfere with PR #29.
-- **Fresh data**: each environment starts with an empty database, then the AI seed injects contextual data. Tests always run against a clean, predictable baseline.
-- **Real environment**: unlike CI tests with a mocked DB, jobs run against a real deployed PostgreSQL with the real migration applied.
-
-### Enabling the test suite
-
-Add `testSuite.enabled: true` to your Cellenza CR:
-
-```yaml
-spec:
-  testSuite:
-    enabled: true
-    smoke: {}           # no config needed — built into the operator
-    regression:
-      enabled: true     # runs /app/tests/regression.py using the app image
-    e2e:
-      enabled: true     # runs /app/tests/e2e.py using the app image
-```
-
-The `tests/` folder is already included in this repo's Docker image.
-
-### Reading results
+### Reading test results
 
 ```bash
 # Summary
-kubectl get cz pr-42 -o jsonpath='{.status.tests}' | jq .
+kubectl get cellenza pr-42 -o jsonpath='{.status.tests}' | jq .
 
-# Current pipeline step
-kubectl get cz pr-42 -o jsonpath='{.status.tests.step}'
+# Per-suite
+kubectl get cellenza pr-42 -o jsonpath='{.status.tests.smoke}'
+kubectl get cellenza pr-42 -o jsonpath='{.status.tests.regression}'
+kubectl get cellenza pr-42 -o jsonpath='{.status.tests.e2e}'
 
-# Per-suite details
-kubectl get cz pr-42 -o jsonpath='{.status.tests.smoke}'
-kubectl get cz pr-42 -o jsonpath='{.status.tests.regression}'
-kubectl get cz pr-42 -o jsonpath='{.status.tests.e2e}'
+# Live logs during execution
+kubectl logs -n preview-pr-42 job/smoke-tests -f
+kubectl logs -n preview-pr-42 job/regression-tests -f
+kubectl logs -n preview-pr-42 job/e2e-tests -f
 ```
 
 ### PR comment produced automatically
@@ -722,41 +848,208 @@ kubectl get cz pr-42 -o jsonpath='{.status.tests.e2e}'
 | Suite      | Status       | Passed | Failed |
 |------------|--------------|--------|--------|
 | Smoke      | ✅ Succeeded | 2      | 0      |
-| Regression | ✅ Succeeded | 8      | 0      |
+| Regression | ✅ Succeeded | 9      | 0      |
 | E2E        | ✅ Succeeded | 6      | 0      |
 ```
 
+### What each test validates
+
+| Suite | Script | Target | Validates |
+|-------|--------|--------|-----------|
+| Smoke | embedded in operator | `svc-backend:8080` | Deployment is healthy — `/healthz` 200, `/api/products` 200 |
+| Regression | `tests/regression.py` | `svc-backend:8080` | All existing endpoints return correct status + response structure on a real DB |
+| E2E | `tests/e2e.py` | `svc-frontend:3000` | Full user flows: browse catalogue, open product detail, related products, discount filter, close panel |
+
 ---
 
-## Accessing the preview
+## 7. AI Enrichment Orchestration
 
-### Port-forward ingress (required for Kind)
+### Why before tests
+
+The AI seed job inserts realistic product data — names, descriptions, prices, discounts, reviews. The regression and E2E tests depend on this data being present. The controller therefore **blocks the test suite until AI enrichment is Succeeded or Failed** (in which case tests run on an empty or partially seeded DB, which is still better than running before the seed).
+
+```go
+// controller logic — tests.go
+if aiEnrichmentEnabled(cellenza) {
+    aiPhase := cellenza.Status.AIEnrichment.Phase
+    if aiPhase != "Succeeded" && aiPhase != "Failed" {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+}
+// only reaches here when AI is done
+reconcileTestSuite(...)
+```
+
+### Full AI enrichment pipeline
+
+```
+Preview reaches Running phase
+           │
+           ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Job: ai-schema-dump                                                 │
+│  Image: postgres:15                                                  │
+│  pg_dump --schema-only → stored in ConfigMap "ai-schema"            │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │
+           ┌────────────────────▼─────────────────────────────────────┐
+           │  Controller: fetch PR diff via GitHub API                 │
+           │  GET /repos/{owner}/{repo}/pulls/{prNumber}/files        │
+           └────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼──────────────────────────────────────┐
+│  Job: ai-generate                                                    │
+│  Image: python:3.11                                                  │
+│                                                                      │
+│  Prompt includes:                                                    │
+│    - DB schema (from ConfigMap)                                      │
+│    - PR diff (lines changed)                                         │
+│    - system prompt (from operator config or @cellenza set-prompt)   │
+│                                                                      │
+│  LLM produces:                                                       │
+│    seed.sql  → INSERT INTO categories…; INSERT INTO products…;      │
+│               At least 10 products across 3 categories,             │
+│               2 reviews per product (varied 1–5 ★ ratings)          │
+│    test.py   → Integration tests targeting the modified code paths  │
+│                (same PASS/FAIL format as regression.py)              │
+│                                                                      │
+│  Both files written to ConfigMap "ai-artifacts"                     │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │
+           ┌────────────────────▼─────────────────────────────────────┐
+           │  Job: ai-seed                                             │
+           │  Image: postgres:15                                       │
+           │  psql seed.sql → inserts products, categories, reviews   │
+           └────────────────────┬─────────────────────────────────────┘
+                                │
+           ┌────────────────────▼─────────────────────────────────────┐
+           │  Job: ai-tests                                            │
+           │  Image: python:3.11                                       │
+           │  pip install requests && python test.py                   │
+           │  APP_URL=http://svc-backend:8080                          │
+           └────────────────────┬─────────────────────────────────────┘
+                                │
+                    status.aiEnrichment.phase = Succeeded / Failed
+                    Results posted to PR comment
+                                │
+                                ▼
+                    Test suite unblocked (§6)
+```
+
+### Enable in CR
+
+```yaml
+spec:
+  aiEnrichment:
+    enabled: true
+    apiSecretRef:
+      name: ai-api-key
+      key: api-key
+    model: gpt-4o-mini       # optional, default gpt-4o-mini
+    seed:
+      enabled: true          # optional, default true
+    tests:
+      enabled: true          # optional, default true
+```
+
+### AI provider options
+
+| Provider | API URL | Secret |
+|----------|---------|--------|
+| OpenAI (default) | `https://api.openai.com/v1` | `sk-…` PAT |
+| GitHub Models (free) | `https://models.inference.ai.azure.com` | GitHub PAT |
+| Azure OpenAI | `https://<resource>.openai.azure.com/openai` | Azure API key |
+
+For any non-OpenAI provider, set `AI_API_URL`:
 
 ```bash
+kubectl set env deployment/cellenza-operator \
+  AI_API_URL=https://models.inference.ai.azure.com \
+  -n cellenza-operator-system
+```
+
+### Trigger an AI-only rerun
+
+Use this when you change the AI prompt, the operator image, or want fresh data without rerunning the full workflow:
+
+```bash
+# Via Copilot Extension
+@cellenza retest-ai pr-42
+
+# Via kubectl
+kubectl patch cellenza pr-42 --type=merge \
+  -p='{"spec":{"aiEnrichment":{"rerunRequested":true}}}'
+```
+
+The controller:
+1. Deletes the `ai-artifacts` ConfigMap
+2. Re-runs the 4-step AI pipeline (schema-dump → generate → seed → tests)
+3. Skips smoke / regression / E2E for this cycle
+4. Posts updated results to the PR
+
+### Per-environment prompt override
+
+```bash
+@cellenza set-prompt pr-42 "Generate products for a luxury watchmaker. Include Swiss brands, price range €500–€10000, at least 3 watch complications."
+@cellenza retest-ai pr-42
+```
+
+### AI test format
+
+The AI uses `tests/example_test.py` as a template — 18 integration tests covering the full API surface. Generated `test.py` files follow the same `PASS/FAIL` line format so the controller can parse results consistently.
+
+---
+
+## 8. GitHub Integration
+
+The operator calls the GitHub API directly from its reconciliation loop — no external webhook, no polling service.
+
+### Phase → GitHub state mapping
+
+```
+┌──────────────────┬──────────────────────┬─────────────────────────────────────┐
+│ Cellenza phase   │ GitHub Deployment    │ PR comment                          │
+├──────────────────┼──────────────────────┼─────────────────────────────────────┤
+│ Pending          │ queued               │ —                                   │
+│ Provisioning     │ in_progress          │ 🔄 Provisioning en cours…           │
+│ Running          │ success + URL        │ ## Cellenza Preview Ready           │
+│                  │                      │ URL + DB evidence + test results    │
+│ Failed           │ failure              │ ## Cellenza Preview Failed          │
+│                  │                      │ diagnostics + pod logs              │
+│ Terminating      │ inactive             │ — (posted by cleanup.yaml)          │
+└──────────────────┴──────────────────────┴─────────────────────────────────────┘
+```
+
+### Idempotence
+
+Before every GitHub API call, the controller checks `status.github.deploymentState`, `lastNotifiedPhase`, and `commentId`. If the state was already written → zero API call, even across 100 reconcile loops. The PR comment is updated in-place (same `commentId`) rather than creating a new comment each time.
+
+```bash
+kubectl get cellenza pr-42 -o jsonpath='{.status.github}' | jq .
+kubectl get cellenza pr-42 -o jsonpath='{.status.github.lastError}'
+```
+
+### Accessing the preview
+
+```bash
+# Port-forward ingress (required for Kind)
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
-```
 
-Preview URL printed in PR comment:
-
-```
+# Preview URL printed in the PR comment:
 http://pr-<NUMBER>.preview.localtest.me:8080
-```
 
-> **WSL2:** Run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
-
-### Jaeger UI
-
-```bash
+# Jaeger traces
 kubectl port-forward -n observability svc/jaeger 16686:16686
+# Open http://localhost:16686 → service: idp-testing-pr-42
 ```
 
-Open [http://localhost:16686](http://localhost:16686) → select service **`idp-testing-pr-42`**.
+> **WSL2:** run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
 
 ---
 
-## GitHub Copilot Extension
+## 9. Copilot Extension
 
-The Cellenza Extension lets developers manage preview environments directly from GitHub Copilot Chat in VS Code — no `kubectl` needed.
+Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl` needed.
 
 ### Available commands
 
@@ -765,91 +1058,40 @@ The Cellenza Extension lets developers manage preview environments directly from
 | `@cellenza list` | List all active environments |
 | `@cellenza status pr-42` | Phase, URL, DB state, TTL remaining |
 | `@cellenza logs pr-42` | Last 40 lines from the app pod |
-| `@cellenza extend pr-42 24h` | Extend TTL immediately |
+| `@cellenza extend pr-42 24h` | Extend TTL |
 | `@cellenza wake pr-42` | Restart a scaled-down environment |
 | `@cellenza reset-db pr-42` | Delete + re-run migration and seed |
-| `@cellenza run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview database |
-| `@cellenza retest-ai pr-42` | Trigger an operator-managed AI-only rerun |
-| `@cellenza enrich pr-42` | Backward-compatible alias for `@cellenza retest-ai pr-42` |
-| `@cellenza set-prompt pr-42 <instructions>` | Set custom AI instructions for this environment |
-| `@cellenza show-prompt pr-42` | Show the current AI prompt |
+| `@cellenza run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview DB |
+| `@cellenza retest-ai pr-42` | Trigger AI-only rerun |
+| `@cellenza set-prompt pr-42 <text>` | Set custom AI instructions |
+| `@cellenza show-prompt pr-42` | Show current AI prompt |
 | `@cellenza help` | Show all commands |
 
-Use `@cellenza retest-ai` when only the operator, the AI prompt, or AI generation settings changed.
-The operator deletes AI artifacts, replays DB migration/seed when enabled, skips the standard smoke/regression/E2E suite for that cycle, then regenerates `seed.sql` and `test.py`.
+### `run-sql` examples
 
-#### `run-sql` examples
-
-**Inspecter la base de données**
 ```
+# Inspect
 @cellenza run-sql pr-42 SELECT COUNT(*) FROM products;
-@cellenza run-sql pr-42 SELECT * FROM categories ORDER BY name;
-@cellenza run-sql pr-42 SELECT p.name, p.price, p.stock, p.discount_pct FROM products p ORDER BY p.created_at DESC LIMIT 10;
-@cellenza run-sql pr-42 SELECT p.name, AVG(r.rating) AS avg_rating, COUNT(r.id) AS nb_reviews FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name ORDER BY avg_rating DESC;
-@cellenza run-sql pr-42 SELECT status, COUNT(*) FROM orders GROUP BY status;
-```
+@cellenza run-sql pr-42 SELECT p.name, AVG(r.rating) FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name;
 
-**Modifier le schéma**
-```
+# Modify schema
 @cellenza run-sql pr-42 ALTER TABLE products ADD COLUMN featured BOOLEAN DEFAULT false;
-@cellenza run-sql pr-42 ALTER TABLE products ADD COLUMN tags TEXT[];
-@cellenza run-sql pr-42 ALTER TABLE orders ADD COLUMN shipping_address TEXT;
-```
 
-**Insérer des données de test**
-```
-@cellenza run-sql pr-42 INSERT INTO categories (name, slug) VALUES ('Promo', 'promo');
-@cellenza run-sql pr-42 INSERT INTO products (name, price, stock, discount_pct) VALUES ('Test Product', 29.99, 50, 10);
-@cellenza run-sql pr-42 INSERT INTO reviews (product_id, author, rating, comment) VALUES (1, 'Alice', 5, 'Excellent!');
-```
+# Insert test data
+@cellenza run-sql pr-42 INSERT INTO products (name, price, stock) VALUES ('Test', 9.99, 10);
 
-**Mettre à jour des données**
-```
-@cellenza run-sql pr-42 UPDATE products SET featured = true WHERE discount_pct > 20;
-@cellenza run-sql pr-42 UPDATE products SET stock = stock + 100 WHERE stock < 10;
-@cellenza run-sql pr-42 UPDATE orders SET status = 'shipped' WHERE status = 'pending';
-```
-
-**Nettoyer / réinitialiser**
-```
+# Reset
 @cellenza run-sql pr-42 TRUNCATE orders RESTART IDENTITY CASCADE;
-@cellenza run-sql pr-42 DELETE FROM products WHERE stock = 0;
-@cellenza run-sql pr-42 DELETE FROM reviews WHERE rating = 1;
 ```
 
-The command creates a `psql` Job in the preview namespace connected to the preview database via the `postgres-credentials` secret. Results are available with `kubectl logs -n preview-pr-42 job/<job-name>`.
-
-### Deploy
+### Deploy the extension
 
 ```bash
 kubectl apply -f config/extension/rbac.yaml
 kubectl apply -f config/extension/deployment.yaml
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension --timeout=60s
-```
 
-### Upgrade the operator
-
-To upgrade to a new version of the Cellenza Operator (e.g. `0.13.8`):
-
-```bash
-# Always apply the CRD first — the chart does not update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.8 \
-  | tail -n +3 \
-  | kubectl apply -f -
-
-helm upgrade cellenza-operator \
-  oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.8 \
-  --namespace cellenza-operator-system
-
-kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
-```
-
-> `tail -n +3` strips the two-line Helm OCI pull header (`Pulled: ...` / `Digest: ...`) that `helm show crds` prepends to the YAML output.
-
-### Expose for local Kind (ngrok)
-
-```bash
+# Expose for local Kind
 kubectl port-forward -n cellenza-operator-system svc/cellenza-extension 8090:8090 &
 ngrok http 8090
 # Copy the HTTPS URL → paste as webhook URL in your GitHub App settings
@@ -857,36 +1099,91 @@ ngrok http 8090
 
 ---
 
-## Troubleshooting
+## 10. Application Reference
 
-### Kaniko job hangs on image push — `CELLENZA_GITHUB_TOKEN` missing or lacks `write:packages`
+### Services
 
-Symptom: the workflow times out with `error: timed out waiting for the condition on jobs/kaniko-<run_id>` and `kubectl logs` for the Kaniko pod shows only `Pushing image to ghcr.io/...` with no follow-up.
+| Service | File | Port | Ingress path | Role |
+|---------|------|------|--------------|------|
+| `backend` | `app.py` | `8080` | `/api` | REST API + DB init |
+| `frontend` | `frontend.py` | `3000` | `/` | SPA + `/api` proxy to backend |
 
-Cause: the `CELLENZA_GITHUB_TOKEN` GitHub Actions secret is not set, or the token does not have `write:packages` permission.
-
-Fix:
+Both built from the **same Docker image**. The entrypoint is selected via `APP_MODE`:
 
 ```bash
-# Update the repo secret with a token that has write:packages
-gh secret set CELLENZA_GITHUB_TOKEN \
-  --repo <OWNER>/<REPO> \
-  --body "<YOUR_GITHUB_PAT>"
-
-# Then retrigger the workflow with an empty commit
-git commit --allow-empty -m "ci: retrigger preview"
-git push
+docker run -e DATABASE_URL=... image              # → app.py (backend)
+docker run -e APP_MODE=frontend -e ... image      # → frontend.py (frontend)
 ```
 
-### Helm chart version not found
+The frontend proxies `/api/*` requests to the backend via a Flask route — so `fetch('/api/products')` in the browser works correctly inside the cluster without touching the ingress.
 
-Symptom: `Error: chart "..." version "X.Y.Z" not found`.
+### Database schema
 
-Cause: pinned chart versions are removed from remote indexes over time.
+```sql
+categories (id SERIAL, name TEXT, slug TEXT)
+products   (id SERIAL, name TEXT, description TEXT, category_id INT,
+            price NUMERIC, stock INT, discount_pct NUMERIC, created_at TIMESTAMP)
+reviews    (id SERIAL, product_id INT, author TEXT, rating INT CHECK(1..5),
+            comment TEXT, created_at TIMESTAMP)
+orders     (id SERIAL, product_id INT, quantity INT, status TEXT, created_at TIMESTAMP)
+```
 
-Fix: run `helm repo update` and omit `--version` to install the latest available release (Steps 3 and 5).
+The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — restarts are safe.
 
-### Workflow does not trigger — runner token expired
+### Backend REST API (`app.py`)
+
+| Route | Method | Returns |
+|-------|--------|---------|
+| `/healthz` | GET | `ok` |
+| `/api/products` | GET | last 50 products with ratings |
+| `/api/products` | POST | create product → 201 |
+| `/api/products/<id>` | GET | product + reviews → 200 / 404 |
+| `/api/products/<id>` | DELETE | 204 / 404 |
+| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/<id>/reviews` | GET/POST | reviews |
+| `/api/categories` | GET/POST | categories |
+| `/api/orders` | GET/POST | orders (409 if insufficient stock) |
+| `/api/stats` | GET | totals, avg rating, out-of-stock |
+| `/api/seeded-data` | GET | full DB dump for AI enrichment UI |
+
+### Frontend features (`frontend.py`)
+
+| Feature | `data-testid` attribute | Used by |
+|---------|------------------------|---------|
+| Product grid | `product-grid` | E2E |
+| Product card | `product-card` | E2E |
+| Discount badge | `product-discount` | E2E |
+| Detail side panel | `product-detail` | E2E |
+| Detail name | `detail-name` | E2E |
+| Detail price | `detail-price` | E2E |
+| Related products section | `related-section` | E2E |
+| Close button | `close-detail` | E2E |
+| Overlay background | `detail-overlay` | E2E |
+| Discount filter input | `discount-input` | E2E |
+| Discount filter apply | `discount-apply` | E2E |
+| Preview badge | `preview-badge` | E2E |
+
+### File map
+
+| File | Role |
+|------|------|
+| `app.py` | Backend — REST API, DB init |
+| `frontend.py` | Frontend — SPA, `/api` proxy |
+| `Dockerfile` | Single image, `APP_MODE=frontend` switches entrypoint |
+| `tests/regression.py` | 9 endpoint regression tests |
+| `tests/e2e.py` | 6 Playwright E2E tests |
+| `tests/example_test.py` | 18-test template used by AI to generate `test.py` |
+| `.github/workflows/preview.yaml` | CI: build → deploy Cellenza CR |
+| `.github/workflows/cleanup.yaml` | CI: delete Cellenza CR on PR close |
+
+---
+
+## 11. Troubleshooting
+
+### Runner token expired
+
+Symptom: runner pod is running but shows `Listening for Jobs` then reconnects every few minutes, or jobs never start.
 
 ```bash
 NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
@@ -896,31 +1193,57 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected: "Listening for Jobs"
 ```
 
-### Cellenza Failed — ingress x509 webhook error
+### Kaniko job hangs on image push
 
-Symptom: `kubectl describe cz pr-<N>` shows:
-```
-Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io":
-tls: failed to verify certificate: x509: certificate signed by unknown authority
-```
+Symptom: workflow times out at `kubectl wait job/kaniko-…`, pod logs show only `Pushing image to ghcr.io/…`.
 
-Cause: ingress-nginx was installed with admission webhooks enabled. The webhook certificate is self-signed and not trusted in a Kind cluster.
+Cause: `CELLENZA_GITHUB_TOKEN` secret missing or lacks `write:packages`.
 
-Fix:
 ```bash
-# Remove the stale webhook
-kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
+gh secret set CELLENZA_GITHUB_TOKEN --repo <OWNER>/<REPO> --body "<PAT>"
+git commit --allow-empty -m "ci: retrigger" && git push
+```
 
-# Reinstall ingress-nginx with webhooks disabled (permanent fix)
+### Infinite reconcile loop every 2 seconds
+
+Cause: the CRD schema is missing a field that the controller writes to `status` — the API server silently strips it on every write, so the field never persists, causing the controller to keep trying.
+
+Fix: always apply the CRD **before** helm upgrade.
+
+```bash
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.8 \
+  | tail -n +3 | kubectl apply -f -
+helm upgrade cellenza-operator oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
+  --version 0.13.8 --namespace cellenza-operator-system
+```
+
+### Preview stuck in Provisioning
+
+```bash
+kubectl describe cellenza pr-<N>
+kubectl get events -n preview-pr-<N> --sort-by='.lastTimestamp'
+```
+
+### Preview Failed — x509 webhook error
+
+Symptom: `failed calling webhook "validate.nginx.ingress.kubernetes.io": x509: certificate signed by unknown authority`
+
+```bash
+kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
 helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
-  --set controller.admissionWebhooks.enabled=false \
-  --wait
-
-# Retrigger the preview (delete the failed CR and push an empty commit)
+  --set controller.admissionWebhooks.enabled=false --wait
 kubectl delete cellenza pr-<N> --ignore-not-found
-git commit --allow-empty -m "ci: retrigger preview"
-git push
+git commit --allow-empty -m "ci: retrigger" && git push
+```
+
+### Preview Failed — read diagnostics
+
+```bash
+kubectl get cellenza pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
+# .podLogs      → last 30 lines of the crashed app container
+# .lastEvents   → recent Warning events from the namespace
+# .debugCommands → kubectl commands for further investigation
 ```
 
 ### No traces in Jaeger
@@ -928,216 +1251,14 @@ git push
 ```bash
 kubectl get pod -n preview-pr-<N> -l app=cellenza-preview \
   -o jsonpath='{.items[0].metadata.annotations}' | grep instrumentation
-# Expected: instrumentation.opentelemetry.io/inject-python: observability/python
+# Expected: "instrumentation.opentelemetry.io/inject-python": "observability/python"
 ```
 
-### Preview stuck in Provisioning
+### Helm chart version not found
 
 ```bash
-kubectl describe cz pr-<N>
-kubectl get events -n preview-pr-<N> --sort-by='.lastTimestamp'
-```
-
-### Preview Failed — read diagnostics
-
-The operator captures pod logs, Kubernetes events, and debug commands automatically:
-
-```bash
-kubectl get cz pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
-# .podLogs    → last 30 lines of the crashed app container
-# .lastEvents → recent Warning events from the namespace
-# .debugCommands → kubectl commands to run for further investigation
-```
-
----
-
-## Application
-
-The demo app is a **product catalogue** (v3.0.0) split into two services backed by PostgreSQL — designed to showcase the Cellenza multi-service preview feature and AI enrichment.
-
-### Services
-
-| Service | File | Port | Path | Role |
-|---------|------|------|------|------|
-| `backend` | `app.py` | `8080` | `/api` | REST API + DB init |
-| `frontend` | `frontend.py` | `3000` | `/` | SPA served by Flask |
-
-Both services are built from the **same Docker image**. The entry point is selected via the `APP_MODE` environment variable:
-
-```bash
-# default → backend
-docker run -e DATABASE_URL=... image
-
-# frontend
-docker run -e APP_MODE=frontend image
-```
-
-### Database schema
-
-```sql
-categories (id, name, slug)
-products   (id, name, description, category_id, price NUMERIC, stock INT, discount_pct NUMERIC, created_at)
-reviews    (id, product_id, author, rating INT CHECK(1..5), comment, created_at)
-orders     (id, product_id, quantity, status, created_at)
-```
-
-The backend calls `init_db()` on startup — tables are created with `CREATE TABLE IF NOT EXISTS`, so restarts are safe.
-
-### Frontend (`frontend.py` — port 3000)
-
-Single-page application served at `/`. All data is fetched from `/api` via JavaScript `fetch()` — the ingress routes the calls to the backend transparently.
-
-| Feature | Details |
-|---------|---------|
-| Product grid | Cards with category, price, discount badge, stock color, star rating |
-| Product detail panel | Side panel with `data-testid` attributes for Playwright E2E |
-| Related products | Listed inside the detail panel |
-| Add product form | `POST /api/products` — form validates name + price |
-| Stats bar | Total products, categories, reviews, orders, out-of-stock |
-| Preview badge | PR number + branch shown in header when `PREVIEW_PR` is set |
-
-### Backend (`app.py` — port 8080)
-
-Pure REST API — no HTML rendering.
-
-| Route | Method | Description |
-|---|---|---|
-| `/healthz` | GET | Returns `ok` — liveness/readiness probe |
-| `/ping` | GET | Returns `pong` |
-| `/api/version` | GET | `{"version":"3.0.0","feature":"product-catalogue"}` |
-
-### JSON REST API
-
-| Route | Method | Description |
-|---|---|---|
-| `/api/categories` | GET | List categories with `product_count` |
-| `/api/categories` | POST | Create `{"name":"…","slug":"…"}` → 201 |
-| `/api/products` | GET | List last 50 products with ratings |
-| `/api/products` | POST | Create `{"name":"…","price":9.99,"stock":10,"discount_pct":0}` → 201 |
-| `/api/products/<id>` | GET | Product detail with reviews → 200 or 404 |
-| `/api/products/<id>` | DELETE | Delete product → 204 or 404 |
-| `/api/products/<id>/reviews` | GET | List reviews for a product |
-| `/api/products/<id>/reviews` | POST | Create review `{"author":"…","rating":5,"comment":"…"}` → 201 |
-| `/api/orders` | GET | List last 50 orders |
-| `/api/orders` | POST | Create order `{"product_id":1,"quantity":2}` — checks stock, returns 409 if insufficient → 201 |
-| `/api/stats` | GET | `{"total_products":N,"total_categories":N,"total_reviews":N,"total_orders":N,"out_of_stock":N,"low_stock":N,"avg_rating":4.2,"categories":[…]}` |
-| `/api/seeded-data` | GET | All products, categories, reviews and order count — used by the AI enrichment UI card |
-| `/api/version` | GET | `{"version":"2.0.0","feature":"product-catalogue"}` |
-
----
-
-## AI Enrichment
-
-When `spec.aiEnrichment.enabled: true`, the operator automatically generates seed data and integration tests **after the preview environment reaches Running phase**.
-If the `seed` or `tests` blocks are omitted, the operator treats them as enabled by default. Set `enabled: false` explicitly to skip one of the tasks.
-
-### How it works
-
-```
-PR opened → preview Running
-                │
-                ▼
-    Operator fetches PR diff (GitHub API)
-    Operator dumps DB schema (pg_dump --schema-only Job)
-                │
-                ▼
-    AI generates:
-      ├── seed.sql   → at least 10 products across 3 categories,
-      │                2 reviews per product (varied ratings 1–5★),
-      │                data coherent with the PR changes and DB schema
-      └── test.py    → integration tests targeting modified code paths
-                │
-                ▼
-    ai-seed Job  → psql seed.sql against the preview database
-    ai-tests Job → pip install requests && python test.py
-                │
-                ▼
-    Results visible in PR comment and @cellenza status pr-N
-```
-
-### Enable in Cellenza CR
-
-```yaml
-spec:
-  aiEnrichment:
-    enabled: true
-    apiSecretRef:
-      name: ai-api-key          # kubectl create secret generic ai-api-key --from-literal=api-key=sk-...
-      key: api-key
-    model: gpt-4o-mini          # optional, defaults to gpt-4o-mini
-    seed:
-      enabled: true            # optional, defaults to true when omitted
-    tests:
-      enabled: true            # optional, defaults to true when omitted
-```
-
-### Create the API key secret
-
-```bash
-# OpenAI
-kubectl create secret generic ai-api-key \
-  --from-literal=api-key=sk-... \
-  -n cellenza-operator-system
-
-# GitHub Models (free tier)
-kubectl create secret generic ai-api-key \
-  --from-literal=api-key=<GITHUB_TOKEN> \
-  -n cellenza-operator-system
-
-kubectl set env deployment/cellenza-operator \
-  AI_API_URL=https://models.inference.ai.azure.com \
-  -n cellenza-operator-system
-```
-
-### Trigger manually
-
-```bash
-# Re-run AI enrichment on an existing environment
-@cellenza retest-ai pr-42
-# or via kubectl
-kubectl patch cz pr-42 --type=merge \
-  -p='{"spec":{"aiEnrichment":{"rerunRequested":true}}}'
-```
-
-`@cellenza enrich pr-42` remains available as an alias, but `retest-ai` is the preferred command.
-This AI-only rerun path is the right choice when testing a new operator image or a prompt change, because it does not require rerunning the full `preview.yaml` workflow.
-
-### Prompt configuration
-
-- Global prompt: managed by the operator Helm chart via `ai.systemPrompt` or `--set-file ai.systemPrompt=...`
-- Per-preview override: `@cellenza set-prompt pr-42 <instructions>`, then `@cellenza retest-ai pr-42`
-
-### Test format (tests/example_test.py)
-
-`tests/example_test.py` is a template of 18 integration tests that the AI uses as a model when generating `test.py` for a new PR:
-
-| # | Test | What it verifies |
-|---|------|-----------------|
-| 1 | `test_health` | `GET /healthz` → 200 `ok` |
-| 2 | `test_version` | `GET /api/version` → `2.0.0`, `product-catalogue` |
-| 3 | `test_list_categories_returns_json` | `GET /api/categories` → list |
-| 4 | `test_create_category` | `POST /api/categories` → 201 |
-| 5 | `test_list_products_returns_json` | `GET /api/products` → list |
-| 6 | `test_create_product` | `POST /api/products` → 201 |
-| 7 | `test_get_product` | `GET /api/products/<id>` → 200 |
-| 8 | `test_get_nonexistent_product` | `GET /api/products/999999` → 404 |
-| 9 | `test_delete_product` | `DELETE /api/products/<id>` → 204, then 404 |
-| 10 | `test_create_product_requires_price` | `POST` without price → 400 |
-| 11 | `test_create_review` | `POST /api/products/<id>/reviews` → 201 |
-| 12 | `test_review_rating_validation` | Review with rating 6 → 400 |
-| 13 | `test_list_reviews` | `GET /api/products/<id>/reviews` → list |
-| 14 | `test_create_order` | `POST /api/orders` → 201, stock decremented |
-| 15 | `test_order_insufficient_stock` | Order qty > stock → 409 |
-| 16 | `test_list_orders` | `GET /api/orders` → list |
-| 17 | `test_stats` | `GET /api/stats` → all keys present |
-| 18 | `test_seeded_data` | `GET /api/seeded-data` → products, categories, reviews |
-
-Each test prints `PASS: test_name` or `FAIL: test_name — reason`. The AI-generated `test.py` follows the same format but is adapted to the specific changes in the PR.
-
-Run locally against a live environment:
-
-```bash
-APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
+helm repo update
+# Then omit --version to use the latest available release
 ```
 
 ---
@@ -1147,22 +1268,10 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 | Component | Namespace | Version | Notes |
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
-| ingress-nginx | `ingress-nginx` | 4.15.1 | `admissionWebhooks.enabled=false` required |
-| Cellenza Operator | `cellenza-operator-system` | **0.13.8** | Multi-service + testSuite séquentiel (checkpoint save/restore) + AI enrichment before tests + sequential pipeline + per-test DB restore + FRONTEND_URL proxy |
+| ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
+| Cellenza Operator | `cellenza-operator-system` | **0.13.8** | Multi-service, sequential test pipeline, AI enrichment, checkpoint restore |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
-| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`, `RUNNER_TOKEN` |
-| Cellenza Extension | `cellenza-operator-system` | **0.13.8** | |
-
-## App files
-
-| File | Role | Port |
-|------|------|------|
-| `app.py` | Backend — REST API only | `8080` |
-| `frontend.py` | Frontend — SPA served by Flask | `3000` |
-| `Dockerfile` | Single image, `APP_MODE=frontend` switches entrypoint | — |
-| `tests/regression.py` | Regression tests run by the operator | — |
-| `tests/e2e.py` | Playwright E2E tests run by the operator | — |
-| `tests/example_test.py` | Template used by AI enrichment to generate `test.py` | — |
-
+| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
+| Cellenza Extension | `cellenza-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
