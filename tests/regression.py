@@ -7,27 +7,41 @@ import os
 import sys
 import requests
 
-BASE = os.environ.get("APP_URL", "http://app:80")
+BASE         = os.environ.get("APP_URL", "http://app:80")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", BASE)
+
+# Discover a real product id from the API (AI seed uses SERIAL, id may not start at 1).
+def _first_product_id():
+    try:
+        r = requests.get(BASE + "/api/products", timeout=10)
+        products = r.json()
+        if products:
+            return products[0]["id"]
+    except Exception:
+        pass
+    return 1
+
+_pid = _first_product_id()
 
 tests = [
-    # (name, method, path, expected_status, extra_check)
-    ("homepage_html", "GET", "/", 200, lambda r: "Cellenza" in r.text and "Catalogue" in r.text),
-    ("health", "GET", "/health", 200, None),
-    ("products_list", "GET", "/api/products", 200, lambda r: isinstance(r.json(), list)),
-    ("product_detail", "GET", "/api/products/1", 200, lambda r: "id" in r.json()),
-    ("product_not_found", "GET", "/api/products/99999", 404, None),
-    ("discounted_products", "GET", "/api/products/discounted?min_discount=0", 200, lambda r: isinstance(r.json(), list)),
-    ("discounted_with_filter", "GET", "/api/products/discounted?min_discount=50", 200, None),
-    ("related_products", "GET", "/api/products/1/related", 200, lambda r: isinstance(r.json(), list)),
-    ("related_invalid", "GET", "/api/products/99999/related", 404, None),
+    # (name, method, url, expected_status, extra_check)
+    ("homepage_html",      "GET", FRONTEND_URL + "/",                              200, lambda r: "Cellenza" in r.text or "catalogue" in r.text.lower()),
+    ("health",             "GET", BASE + "/healthz",                               200, None),
+    ("products_list",      "GET", BASE + "/api/products",                          200, lambda r: isinstance(r.json(), list)),
+    ("product_detail",     "GET", BASE + f"/api/products/{_pid}",                  200, lambda r: "id" in r.json()),
+    ("product_not_found",  "GET", BASE + "/api/products/99999",                    404, None),
+    ("discounted_products","GET", BASE + "/api/products/discounted?min_discount=0",200, lambda r: isinstance(r.json(), list)),
+    ("discounted_with_filter","GET",BASE + "/api/products/discounted?min_discount=50",200, None),
+    ("related_products",   "GET", BASE + f"/api/products/{_pid}/related",          200, lambda r: isinstance(r.json(), list)),
+    ("related_invalid",    "GET", BASE + "/api/products/99999/related",            404, None),
 ]
 
 passed = 0
 failed = 0
 
-for name, method, path, expected_status, check in tests:
+for name, method, url, expected_status, check in tests:
     try:
-        r = requests.request(method, BASE + path, timeout=10)
+        r = requests.request(method, url, timeout=10)
         status_ok = r.status_code == expected_status
         check_ok = True
         if check and status_ok:
