@@ -165,6 +165,12 @@ jobs:
                 enabled: true
               e2e:
                 enabled: true
+            aiEnrichment:
+              enabled: true
+              apiSecretRef:
+                name: ai-api-key
+                key: api-key
+              model: gpt-4o-mini
             github:
               enabled: true
               owner: ${{ github.repository_owner }}

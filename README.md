@@ -140,7 +140,7 @@ The chart is published as an OCI artifact on GHCR (public, no login required).
 ```bash
 helm install cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.1 \
+  --version 0.13.3 \
   --namespace cellenza-operator-system \
   --create-namespace \
   --wait
@@ -750,17 +750,17 @@ kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension
 
 ### Upgrade the operator
 
-To upgrade to a new version of the Cellenza Operator (e.g. `0.13.1`):
+To upgrade to a new version of the Cellenza Operator (e.g. `0.13.3`):
 
 ```bash
 # Always apply the CRD first — the chart does not update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.1 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.3 \
   | tail -n +3 \
   | kubectl apply -f -
 
 helm upgrade cellenza-operator \
   oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.1 \
+  --version 0.13.3 \
   --namespace cellenza-operator-system
 
 kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
@@ -963,7 +963,9 @@ PR opened → preview Running
                 │
                 ▼
     AI generates:
-      ├── seed.sql   → coherent test data adapted to the PR changes
+      ├── seed.sql   → at least 10 products across 3 categories,
+      │                2 reviews per product (varied ratings 1–5★),
+      │                data coherent with the PR changes and DB schema
       └── test.py    → integration tests targeting modified code paths
                 │
                 ▼
@@ -1067,12 +1069,12 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | 4.15.1 | `admissionWebhooks.enabled=false` required |
-| Cellenza Operator | `cellenza-operator-system` | **0.13.1** | Multi-service + testSuite support |
+| Cellenza Operator | `cellenza-operator-system` | **0.13.3** | Multi-service + testSuite + AI enrichment (10 produits, 3 catégories, 2 avis/produit) |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`, `RUNNER_TOKEN` |
-| Cellenza Extension | `cellenza-operator-system` | **0.13.1** | |
+| Cellenza Extension | `cellenza-operator-system` | **0.13.3** | |
 
 ## App files
 
@@ -1084,3 +1086,4 @@ APP_URL=http://pr-42.preview.localtest.me:8080 python tests/example_test.py
 | `tests/regression.py` | Regression tests run by the operator | — |
 | `tests/e2e.py` | Playwright E2E tests run by the operator | — |
 | `tests/example_test.py` | Template used by AI enrichment to generate `test.py` | — |
+
