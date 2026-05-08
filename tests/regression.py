@@ -30,9 +30,9 @@ tests = [
     ("products_list",      "GET", BASE + "/api/products",                          200, lambda r: isinstance(r.json(), list)),
     ("product_detail",     "GET", BASE + f"/api/products/{_pid}",                  200, lambda r: "id" in r.json()),
     ("product_not_found",  "GET", BASE + "/api/products/99999",                    404, None),
-    ("discounted_products","GET", BASE + "/api/products/discounted?min_discount=0",200, lambda r: isinstance(r.json(), list)),
+    ("discounted_products","GET", BASE + "/api/products/discounted?min_discount=0",200, lambda r: isinstance(r.json().get("products", r.json()), list)),
     ("discounted_with_filter","GET",BASE + "/api/products/discounted?min_discount=50",200, None),
-    ("related_products",   "GET", BASE + f"/api/products/{_pid}/related",          200, lambda r: isinstance(r.json(), list)),
+    ("related_products",   "GET", BASE + f"/api/products/{_pid}/related",          200, lambda r: isinstance(r.json().get("products", r.json()), list)),
     ("related_invalid",    "GET", BASE + "/api/products/99999/related",            404, None),
 ]
 

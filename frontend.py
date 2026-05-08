@@ -1,15 +1,40 @@
 import os
-from flask import Flask, Response
+import urllib.request
+import urllib.error
+from flask import Flask, Response, request
 
 app = Flask(__name__)
 
-PR      = os.environ.get("PREVIEW_PR", "")
-BRANCH  = os.environ.get("PREVIEW_BRANCH", "main")
+PR          = os.environ.get("PREVIEW_PR", "")
+BRANCH      = os.environ.get("PREVIEW_BRANCH", "main")
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://svc-backend:8080")
 
 
 @app.route("/healthz")
 def healthz():
     return "ok", 200
+
+
+@app.route("/api", defaults={"api_path": ""})
+@app.route("/api/<path:api_path>")
+def proxy_api(api_path):
+    """Proxy /api/* to the backend so Playwright can reach the API without going through the ingress."""
+    target = f"{BACKEND_URL}/api/{api_path}"
+    if request.query_string:
+        target += "?" + request.query_string.decode()
+    try:
+        req = urllib.request.Request(target, method=request.method)
+        for key, value in request.headers:
+            if key.lower() not in ("host", "content-length"):
+                req.add_header(key, value)
+        if request.data:
+            req.data = request.data
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return Response(resp.read(), status=resp.status, content_type=resp.headers.get("Content-Type", "application/json"))
+    except urllib.error.HTTPError as e:
+        return Response(e.read(), status=e.code, content_type="application/json")
+    except Exception as e:
+        return Response(str(e), status=502)
 
 
 @app.route("/", defaults={"path": ""})
