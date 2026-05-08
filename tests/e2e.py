@@ -10,7 +10,7 @@ import os
 import sys
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-BASE             = os.environ.get("APP_URL", "http://app:80")
+BASE             = os.environ.get("FRONTEND_URL") or os.environ.get("APP_URL", "http://app:80")
 CHECKPOINT_API   = os.environ.get("CHECKPOINT_API", "")
 CHECKPOINT_NAME  = "after-seed"
 
