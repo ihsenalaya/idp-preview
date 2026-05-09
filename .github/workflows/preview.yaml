@@ -161,10 +161,11 @@ jobs:
             testSuite:
               enabled: true
               smoke: {}
-              contract:
+              contractTesting:
                 enabled: true
                 microcksURL: http://microcks.microcks.svc.cluster.local:8080
-                serviceId: Preview Catalog API:1.0.0
+                apiName: Preview Catalog API
+                apiVersion: "1.0.0"
               regression:
                 enabled: true
               e2e:
