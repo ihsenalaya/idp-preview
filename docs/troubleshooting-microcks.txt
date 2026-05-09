@@ -1,0 +1,219 @@
+MICROCKS — HISTORIQUE DES PROBLÈMES ET SOLUTIONS
+=================================================
+Composant : Microcks 1.14.0
+Opérateur concerné : preview-operator v1.0.7 → v1.0.12
+Date : 2026-05-09
+
+-------------------------------------------------------------------------------
+CONTEXTE
+-------------------------------------------------------------------------------
+L'opérateur crée deux Jobs Kubernetes pour le contract testing Microcks :
+
+  1. microcks-import : upload de openapi.yaml dans Microcks via l'API REST
+  2. microcks-contract-tests : lance un test OPEN_API_SCHEMA depuis Microcks
+     vers le backend vivant, attend les résultats et les écrit dans le status
+
+Les deux Jobs utilisent un script Python embarqué dans l'image python:3.11-slim.
+L'authentification passe par Keycloak (OAuth2 password grant).
+
+-------------------------------------------------------------------------------
+PROBLÈME 1 — HTTP 401 sur le token Keycloak
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le job microcks-import échoue avec :
+    Error: HTTP 401 Unauthorized sur POST /realms/microcks/protocol/openid-connect/token
+
+Tentative 1 (échouée) :
+  Utiliser client_credentials grant sans secret :
+    grant_type=client_credentials&client_id=microcks-serviceaccount&client_secret=
+
+  Le client "microcks-serviceaccount" est confidentiel et requiert un secret.
+  Sans secret → 401.
+
+Tentative 2 (échouée) :
+  Utiliser client_credentials grant avec le secret correct :
+    grant_type=client_credentials
+    client_id=microcks-serviceaccount
+    client_secret=ab54d329-e435-41ae-a900-ec6b3fe15c54
+
+  Le token est obtenu (200 OK), mais l'upload retourne HTTP 403 (voir problème 2).
+
+Solution finale :
+  Utiliser le password grant avec l'utilisateur manager :
+    grant_type=password
+    client_id=microcks-serviceaccount
+    client_secret=ab54d329-e435-41ae-a900-ec6b3fe15c54
+    username=manager
+    password=microcks123
+
+  Raison : le grant client_credentials donne un token service account sans
+  le rôle "manager" requis pour l'upload d'artifacts. Le password grant avec
+  l'utilisateur manager donne un token utilisateur avec ce rôle.
+
+  Credentials Keycloak (installation helm par défaut) :
+    Realm : microcks
+    Client : microcks-serviceaccount
+    Client secret : ab54d329-e435-41ae-a900-ec6b3fe15c54
+    Utilisateur : manager / microcks123
+
+-------------------------------------------------------------------------------
+PROBLÈME 2 — HTTP 403 sur l'upload d'artifact
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le token est obtenu (200 OK) mais POST /api/artifact/upload retourne 403.
+
+Cause :
+  Le token client_credentials ne contient pas le rôle "manager" de
+  l'application microcks-app, requis pour écrire des artifacts.
+
+Solution :
+  Passer au password grant (voir problème 1). Le token utilisateur manager
+  a le rôle nécessaire → upload 201 OK.
+
+-------------------------------------------------------------------------------
+PROBLÈME 3 — HTTP 404 sur l'endpoint d'import
+-------------------------------------------------------------------------------
+
+Symptôme :
+  POST /api/artifact/import retourne 404 Not Found.
+
+Cause :
+  Microcks 1.14.0 a changé l'endpoint d'import.
+  L'ancien endpoint /api/artifact/import n'existe plus.
+
+Diagnostic :
+  Probe manuelle avec curl depuis un pod dans le cluster :
+    /api/artifact/import → 404
+    /api/artifact/upload → 400 (endpoint existe, paramètre manquant)
+    /api/artifact/upload?mainArtifact=true → 201 (correct)
+
+Solution :
+  Utiliser POST /api/artifact/upload?mainArtifact=true
+  Commit dans tests.go : microcksImportScript
+
+-------------------------------------------------------------------------------
+PROBLÈME 4 — JSONDecodeError sur la réponse vide de l'upload
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le job microcks-import échoue avec :
+    json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+Cause :
+  Microcks 1.14.0 retourne HTTP 201 avec un body vide lors d'un import réussi.
+  Le script essayait de parser json.loads(b'') → exception.
+
+Solution :
+  Ajouter un try/except autour du json.loads :
+    try:
+        result = json.loads(raw)
+        ...
+    except (json.JSONDecodeError, ValueError):
+        print('Microcks import OK (status', r.status, ')')
+
+-------------------------------------------------------------------------------
+PROBLÈME 5 — Contract tests : 0 passed, 0 failed (testStepResults vide)
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le job microcks-contract-tests se termine sans erreur mais retourne :
+    "testStepResults": []
+    Results: 0 passed, 0 failed
+
+  Microcks a bien reçu la demande de test (HTTP 201) mais n'a envoyé
+  aucune requête vers le backend.
+
+Cause A : BACKEND_URL non résolvable depuis le namespace microcks
+  Le job utilisait :
+    BACKEND_URL=http://svc-backend:8080
+  Ce nom de service est local au namespace preview-pr-N.
+  Depuis le namespace microcks, ce DNS ne résout pas.
+
+  Solution :
+    Utiliser le FQDN complet :
+      http://svc-backend.preview-pr-4.svc.cluster.local:8080
+
+    Implémentation dans preview_controller.go :
+      func appServiceFQDN(c *Preview, ns string) string {
+          return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
+              serviceDeploymentName(svc.Name), ns, port)
+      }
+
+Cause B : format OpenAPI examples incorrect pour Microcks
+  Microcks OPEN_API_SCHEMA runner requiert des "examples" nommés (pluriel)
+  pour générer les requêtes de test :
+
+    responses:
+      '200':
+        content:
+          application/json:
+            examples:
+              Example_1:           ← format attendu par Microcks
+                value: {...}
+
+  Le spec original utilisait "example" (singulier) :
+    example: {...}                 ← ignoré par Microcks
+
+  Solution :
+    Transformer api/openapi.yaml avec un script Python/PyYAML pour
+    convertir example → examples: {Example_1: {value: ...}}
+    uniquement pour les réponses 2xx et les request bodies.
+    Les réponses d'erreur (4xx, 5xx) restent en format "example" singulier.
+
+    Commits dans idp-preview :
+      0a4ceda — première passe (trop large, convertit aussi les erreurs)
+      966150e — deuxième passe correcte (2xx seulement)
+
+    Attention : si on convertit les réponses InternalError (500) au format
+    named examples, Microcks essaie d'envoyer des requêtes attendant une
+    réponse 500, ce qui fait échouer les tests de manière incorrecte.
+
+-------------------------------------------------------------------------------
+RÉSULTATS FINAUX APRÈS CORRECTIONS
+-------------------------------------------------------------------------------
+
+microcks-import : Succeeded (HTTP 201, body vide géré)
+
+microcks-contract-tests : 7 passed, 2 failed (échecs attendus/connus)
+
+  Échec 1 — Content-Type /healthz :
+    Attendu : text/plain
+    Obtenu  : text/html;charset=utf-8
+    Cause   : Flask retourne du HTML sur /healthz, le spec déclare text/plain
+    Fix     : corriger le spec ou changer la réponse Flask
+
+  Échec 2 — POST /api/products retourne 500 :
+    Attendu : HTTP 201
+    Obtenu  : HTTP 500
+    Cause   : la base de données seed ne contient pas les contraintes de
+              catégorie satisfaites dans l'exemple du spec
+    Fix     : aligner les données de l'exemple avec le seed AI, ou
+              mocker la réponse dans le spec
+
+-------------------------------------------------------------------------------
+NOTES DE CONFIGURATION
+-------------------------------------------------------------------------------
+
+URL Microcks (in-cluster) :
+  http://microcks.microcks.svc.cluster.local:8080
+
+URL Keycloak (in-cluster) :
+  http://microcks-keycloak.microcks.svc.cluster.local:8080
+
+Endpoint upload :
+  POST /api/artifact/upload?mainArtifact=true
+
+Endpoint test :
+  POST /api/tests
+
+Runner type :
+  OPEN_API_SCHEMA
+
+Timeout test Microcks : 30 secondes
+Polling opérateur : toutes les 5 secondes pendant max 3 minutes
+
+Spec URL utilisée :
+  https://raw.githubusercontent.com/ihsenalaya/idp-preview/feat/preview-platform-v2/api/openapi.yaml
+  (accès via PREVIEW_GITHUB_TOKEN pour les repos privés)

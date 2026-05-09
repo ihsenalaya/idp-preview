@@ -1,0 +1,122 @@
+KAGENT — HISTORIQUE DES PROBLÈMES ET SOLUTIONS
+===============================================
+Composant : kagent preview-troubleshooter-agent
+Version kagent : 0.9.2
+Opérateur concerné : preview-operator v1.0.12 → v1.0.13
+Date : 2026-05-09
+
+-------------------------------------------------------------------------------
+CONTEXTE
+-------------------------------------------------------------------------------
+L'opérateur déclenche une analyse kagent via le protocole A2A (JSON-RPC 2.0)
+lorsqu'une suite de tests échoue (contract, regression, e2e). Il appelle
+l'agent preview-troubleshooter-agent en HTTP POST sur le port 8080, attend la
+réponse, puis poste le résultat en commentaire GitHub sur la PR concernée.
+
+-------------------------------------------------------------------------------
+PROBLÈME 1 — "agent returned failed state" (HTTP 400 Azure OpenAI)
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le log opérateur affiche en boucle :
+    ERROR kagent analysis failed {"error": "agent returned failed state"}
+  La réponse A2A contient bien result.status.state = "failed".
+  L'agent répond en ~14 secondes (trop rapide pour une analyse complète).
+
+Diagnostic :
+  Inspection des logs de l'agent pod (preview-troubleshooter-agent) :
+    18:28:45 - POST Azure OpenAI → HTTP 200 OK  (1er appel LLM)
+    18:28:55 - POST Azure OpenAI → HTTP 200 OK  (2ème appel LLM)
+    18:28:57 - POST Azure OpenAI → HTTP 400 Bad Request  ← ÉCHEC ici
+    18:28:57 - runner closed, state = failed
+
+  Le 3ème appel LLM est rejeté par Azure OpenAI avec HTTP 400 :
+  cause = context window exceeded (token limit dépassé).
+
+  Enchaînement des appels d'outils par l'agent :
+    Tour 1 : LLM décide d'appeler k8s_get_resources + k8s_get_pod_logs
+    Tour 2 : Les résultats des logs de jobs (smoke, contract, e2e...)
+             sont très verbeux → beaucoup de tokens dans l'historique
+    Tour 3 : LLM tente de faire un appel Jaeger, mais le contexte
+             cumulé (prompt + tool results) dépasse gpt-4o-mini
+
+Tentatives échouées :
+  - Penser que c'était un problème réseau ou NetworkPolicy :
+      Test depuis kagent-system → completed
+      Test depuis preview-operator-system → completed
+      Seul l'opérateur (processus Go) échouait → piste réseau abandonnée
+  - Penser à un problème de concurrence (debug pod vs opérateur) :
+      Les deux calls étaient bien séquentiels, pas un race condition
+  - Penser à une session A2A corrompue :
+      Chaque call utilise uuid.New() → sessions toujours fraîches
+
+Solution appliquée (v1.0.13) :
+  Modifier buildAnalysisPrompt() dans internal/controller/kagent.go pour
+  inclure directement les sorties de tests (lignes PASS/FAIL) dans le
+  prompt initial. L'agent reçoit les échecs sans avoir besoin de fetch
+  des logs k8s → moins de tokens de tool results → le 3ème appel LLM
+  reste dans les limites du contexte.
+
+  Avant :
+    Prompt minimal → agent fait 3-4 tours de tool calls → overflow
+
+  Après :
+    Prompt inclut status.tests.*.output (max 10 lignes par suite)
+    → l'agent fait 1-2 tours → pas d'overflow
+
+  Commit : c825598 — preview-operator/internal/controller/kagent.go
+
+Vérification :
+  18:50:21 - INFO kagent analysis posted to GitHub {"commentId": 4413413480}
+  Le commentaire contient : risk=HIGH, evidence, suggested fix, kubectl commands
+
+-------------------------------------------------------------------------------
+PROBLÈME 2 — Idempotence : kagent ne se relance pas automatiquement
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Après un échec kagent, l'opérateur réessaie toutes les 5 minutes (cooldown).
+  Mais si aucun événement k8s ne survient après les tests, le réconcile
+  ne se déclenche plus et le retry ne se fait jamais.
+
+Diagnostic :
+  Le reconcile loop se termine sans RequeueAfter quand les tests sont finis.
+  Le status update de kagent (phase=Failed) triggère un réconcile, mais le
+  cooldown (5 min) bloque. Après 5 min, s'il n'y a pas de nouvel événement
+  (plus de jobs qui changent d'état), l'opérateur reste silencieux.
+
+Solution de contournement :
+  Patcher l'annotation de la CR pour forcer un réconcile :
+    kubectl patch preview pr-4 --type=merge \
+      -p '{"metadata":{"annotations":{"kagent.preview.io/retry":"<timestamp>"}}}'
+
+  Solution permanente à implémenter : ajouter un RequeueAfter=5min
+  dans le reconcile quand kagent.phase=Failed et CommentID=0.
+  (pas encore implémenté)
+
+-------------------------------------------------------------------------------
+NOTES DE CONFIGURATION
+-------------------------------------------------------------------------------
+
+Agent URL (in-cluster) :
+  http://preview-troubleshooter-agent.kagent-system.svc.cluster.local:8080
+
+Méthode A2A :
+  POST / HTTP/1.1
+  Content-Type: application/json
+  Body: JSON-RPC 2.0, method = "message/send"
+
+Modèle LLM :
+  Azure OpenAI gpt-4o-mini (deployment: gpt-4o-mini)
+  Endpoint : https://preview-openai-93956.openai.azure.com
+  API version : 2024-10-21
+
+Timeout opérateur → agent : 3 minutes
+Cooldown entre retries : 5 minutes
+
+RBAC :
+  ClusterRole kagent-troubleshooter-readonly lie le SA "kagent-troubleshooter"
+  ATTENTION : l'agent pod utilise le SA "preview-troubleshooter-agent"
+  (SA du déploiement kagent), pas "kagent-troubleshooter". Le ClusterRole
+  custom n'est donc pas utilisé. L'agent s'appuie sur les permissions du
+  SA par défaut kagent + kagent-tools-cluster-admin-role pour les tool calls.
