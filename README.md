@@ -145,6 +145,7 @@ Run once before any install step.
 helm repo add jetstack       https://charts.jetstack.io
 helm repo add ingress-nginx  https://kubernetes.github.io/ingress-nginx
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo add microcks       https://microcks.io/helm
 helm repo update
 ```
 
@@ -202,15 +203,23 @@ kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-n
 
 ### Step 4 — Install the Preview Operator
 
-The chart is published as an OCI artifact on GHCR (public, no login required).
+Build the operator image and load it into Kind, then install with Helm from the local chart.
 
 ```bash
-helm install preview-operator \
-  oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 0.13.8 \
+# Build the operator image
+cd preview-operator
+docker build -t ghcr.io/ihsenalaya/preview-operator:1.0.1 .
+kind load docker-image ghcr.io/ihsenalaya/preview-operator:1.0.1
+
+# Apply the CRD manually (Helm does not update CRDs on upgrade)
+kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
+
+# Install the Helm chart
+helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
-  --wait
+  --set image.tag=1.0.1 \
+  --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 kubectl get crd previews.platform.company.io
@@ -219,20 +228,124 @@ kubectl get crd previews.platform.company.io
 #### Upgrading the operator
 
 ```bash
-# Always apply the CRD first — Helm does NOT update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
-  | tail -n +3 \
-  | kubectl apply -f -
+# Rebuild and reload image
+docker build -t ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION> .
+kind load docker-image ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION>
 
-helm upgrade preview-operator \
-  oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 0.13.8 \
-  --namespace preview-operator-system
+# Apply updated CRD
+kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
+
+# Upgrade the Helm release
+helm upgrade preview-operator ./charts/preview-operator \
+  --namespace preview-operator-system \
+  --set image.tag=<NEW_VERSION> \
+  --reuse-values
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 ```
 
-> `tail -n +3` strips the two-line Helm OCI pull header that `helm show crds` prepends.
+### Step 4b — Install Microcks
+
+Microcks provides in-cluster OpenAPI contract testing. Get the Kind node IP first:
+
+```bash
+NODE_IP=$(kubectl get nodes -o wide | grep control-plane | awk '{print $6}')
+# e.g. 172.18.0.2
+
+helm install microcks microcks/microcks \
+  --namespace microcks \
+  --create-namespace \
+  --set "microcks.url=microcks.${NODE_IP}.nip.io" \
+  --set "microcks.ingressClassName=nginx" \
+  --set "microcks.generateCert=false" \
+  --set "keycloak.url=keycloak.${NODE_IP}.nip.io" \
+  --set "keycloak.ingressClassName=nginx" \
+  --set "keycloak.generateCert=false"
+
+kubectl -n microcks rollout status deployment/microcks --timeout=180s
+```
+
+The operator creates test jobs that call Microcks at `http://microcks.microcks.svc.cluster.local:8080` — no ingress needed for in-cluster communication.
+
+### Step 4c — Install kagent
+
+kagent orchestrates AI agents inside Kubernetes. Install CRDs first, then the main chart.
+
+```bash
+# CRDs must be installed before the main chart
+helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
+  --namespace kagent-system \
+  --create-namespace
+
+helm install kagent oci://ghcr.io/kagent-dev/kagent/helm/kagent \
+  --namespace kagent-system
+
+kubectl -n kagent-system rollout status deployment/kagent-controller --timeout=120s
+```
+
+#### Create the Azure OpenAI secret for kagent
+
+```bash
+# Create an Azure OpenAI resource (if not already done)
+az cognitiveservices account create \
+  --name "preview-openai" \
+  --resource-group "<YOUR_RG>" \
+  --kind "OpenAI" \
+  --sku "S0" \
+  --location "eastus"
+
+az cognitiveservices account deployment create \
+  --name "preview-openai" \
+  --resource-group "<YOUR_RG>" \
+  --deployment-name "gpt-4o-mini" \
+  --model-name "gpt-4o-mini" \
+  --model-version "2024-07-18" \
+  --model-format "OpenAI" \
+  --sku-name "GlobalStandard" \
+  --sku-capacity 30
+
+AOAI_KEY=$(az cognitiveservices account keys list \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "key1" -o tsv)
+
+# Secret for kagent agents
+kubectl create secret generic kagent-openai \
+  --namespace kagent-system \
+  --from-literal=OPENAI_API_KEY="$AOAI_KEY"
+
+# Secret for the operator AI enrichment
+kubectl create secret generic azure-openai-credentials \
+  --namespace preview-operator-system \
+  --from-literal=api-key="$AOAI_KEY"
+```
+
+#### Configure kagent ModelConfig for Azure OpenAI
+
+```bash
+kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p '{
+  "spec": {
+    "provider": "AzureOpenAI",
+    "model": "gpt-4o-mini",
+    "apiKeySecret": "kagent-openai",
+    "apiKeySecretKey": "OPENAI_API_KEY",
+    "azureOpenAI": {
+      "azureEndpoint": "https://preview-openai-<ID>.openai.azure.com",
+      "azureDeployment": "gpt-4o-mini",
+      "apiVersion": "2024-10-21"
+    }
+  }
+}'
+```
+
+#### Deploy the preview troubleshooter agent
+
+```bash
+kubectl apply -f k8s/kagent/rbac-readonly.yaml
+kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
+
+# Verify
+kubectl get agent preview-troubleshooter-agent -n kagent-system
+```
 
 ### Step 5 — Install OpenTelemetry Operator
 
@@ -1280,12 +1393,23 @@ helm repo update
 
 ---
 
-## 12. Contract-aware and agentic troubleshooting workflow
+## 12. Contract testing and AI-powered failure analysis
 
-> **KubeCon narrative:**
+> **Platform narrative:**
 > "Every pull request gets an isolated Kubernetes preview environment,
 > AI-generated test data, API contract validation with Microcks, automated
-> regression/E2E tests, and kagent-powered failure explanation."
+> regression/E2E tests, and kagent-powered failure explanation posted directly
+> as a GitHub PR comment."
+
+### Stack versions
+
+| Component | Version | Role |
+|-----------|---------|------|
+| preview-operator | 1.0.1 | Provisions and orchestrates preview environments |
+| idp-preview (this app) | 1.0.1 | Sample Flask REST API + frontend |
+| Microcks | 1.14.0 | OpenAPI contract testing |
+| kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
+| CRD | `previews.platform.company.io/v1alpha1` | Preview CR |
 
 ### Architecture
 
@@ -1297,18 +1421,18 @@ helm repo update
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  GitHub Actions (.github/workflows/preview.yaml)                    │
-│  Kaniko build → push image → apply Cellenza CR                     │
+│  Kaniko build → push image → apply Preview CR                      │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Cellenza Operator                                                  │
+│  Preview Operator 1.0.1                                             │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
-│   ├── PostgreSQL + backend (svc-backend:8080) + frontend           │
+│   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
 │   ├── AI enrichment: schema-dump → generate → seed → ai-tests     │
-│   ├── Test suite:  smoke → regression → E2E                        │
-│   └── [NEW] Microcks contract test  ◄─────────────────────────┐   │
+│   ├── Test suite:  smoke → contract (Microcks) → regression → E2E  │
+│   └── Microcks contract test  ◄───────────────────────────────┐   │
 └──────────────────────────┬──────────────────────────────────────│───┘
                            │                                       │
          ┌─────────────────┼───────────────────────┐             │

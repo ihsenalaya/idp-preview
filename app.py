@@ -88,6 +88,35 @@ def ping():
     return "pong", 200
 
 
+# ── Pipeline / environment info ───────────────────────────────────────────────
+
+@app.route("/api/pipeline-info", methods=["GET"])
+def api_pipeline_info():
+    """Returns preview environment metadata injected by the operator."""
+    return jsonify({
+        "version":     "1.0.1",
+        "pr":          os.environ.get("PREVIEW_PR", ""),
+        "branch":      os.environ.get("PREVIEW_BRANCH", ""),
+        "environment": os.environ.get("ENVIRONMENT", "preview"),
+        "namespace":   os.environ.get("PREVIEW_NAMESPACE", ""),
+        "pipeline": {
+            "stages": ["smoke", "contract (Microcks)", "regression", "e2e"],
+            "contract_testing": {
+                "tool":        "Microcks",
+                "runner":      "OPEN_API_SCHEMA",
+                "description": "Validates all API endpoints against the OpenAPI 3.0.3 contract"
+            },
+            "kagent": {
+                "enabled":     True,
+                "agent":       "preview-troubleshooter-agent",
+                "trigger":     "Automatic on test suite failure",
+                "description": "AI agent powered by Azure OpenAI gpt-4o-mini that inspects "
+                               "failed jobs and posts a structured diagnosis as a GitHub PR comment"
+            }
+        }
+    })
+
+
 # ── REST API ──────────────────────────────────────────────────────────────────
 
 @app.route("/api/categories", methods=["GET"])
@@ -346,7 +375,6 @@ def api_stats():
 def api_seeded_data():
     try:
         conn = get_conn(); cur = conn.cursor()
-
         cur.execute("""
             SELECT p.id,p.name,p.description,p.price,p.stock,p.discount_pct,
                    p.created_at, c.name AS category_name
@@ -439,7 +467,11 @@ def api_related_products(product_id):
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({"version": "3.1.0", "feature": "v0.13.6-per-test-db-restore"})
+    return jsonify({
+        "version":  "1.0.1",
+        "operator": "preview-operator",
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment"]
+    })
 
 
 if __name__ == "__main__":
