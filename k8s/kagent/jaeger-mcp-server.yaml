@@ -1,0 +1,66 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-mcp-server
+  namespace: kagent-system
+  labels:
+    app: jaeger-mcp-server
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger-mcp-server
+  template:
+    metadata:
+      labels:
+        app: jaeger-mcp-server
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: jaeger-mcp-server
+          image: ghcr.io/ihsenalaya/jaeger-mcp-server:latest
+          ports:
+            - containerPort: 8811
+          env:
+            - name: JAEGER_URL
+              value: http://jaeger.observability:16686
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-mcp-server
+  namespace: kagent-system
+  labels:
+    app: jaeger-mcp-server
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  selector:
+    app: jaeger-mcp-server
+  ports:
+    - port: 8811
+      targetPort: 8811
+---
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: jaeger-mcp-server
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  description: "Jaeger tracing MCP server — exposes traces as tools for kagent failure analysis."
+  url: "http://jaeger-mcp-server.kagent-system.svc.cluster.local:8811/sse"
+  protocol: SSE

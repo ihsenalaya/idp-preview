@@ -40,6 +40,10 @@ spec:
       4. Job logs (last 100 lines) — smoke-tests, microcks-contract-tests,
          regression-tests, e2e-tests, ai-generate, ai-seed
       5. Warning events in the preview namespace
+      6. Jaeger traces — use jaeger_get_services to find the service name
+         (format: idp-preview-pr-<N>), then jaeger_get_traces with tags='error=true'
+         to find failing requests, then jaeger_get_trace to drill into a specific
+         trace ID found in pod logs or in the trace list.
 
       ## Output format
       Produce a single Markdown block suitable for a GitHub PR comment:
@@ -101,3 +105,12 @@ spec:
             - k8s_describe_resource
             - k8s_get_resource_yaml
             - k8s_get_available_api_resources
+      - type: McpServer
+        mcpServer:
+          kind: RemoteMCPServer
+          apiGroup: kagent.dev
+          name: jaeger-mcp-server
+          toolNames:
+            - jaeger_get_services
+            - jaeger_get_traces
+            - jaeger_get_trace
