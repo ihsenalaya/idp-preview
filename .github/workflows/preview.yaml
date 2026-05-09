@@ -171,6 +171,10 @@ jobs:
                 name: ai-api-key
                 key: api-key
               model: gpt-4o-mini
+            kagent:
+              enabled: true
+              namespace: kagent-system
+              agentName: preview-troubleshooter-agent
             github:
               enabled: true
               owner: ${{ github.repository_owner }}
