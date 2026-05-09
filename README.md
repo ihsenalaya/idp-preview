@@ -1671,3 +1671,4 @@ kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
 | OpenAPI spec must be imported in Microcks | Upload `api/openapi.yaml` once before first use |
 | kagent is read-only | Diagnosis only — cannot auto-fix failures |
 | kagent requires a model provider | Azure OpenAI, OpenAI, or any OpenAI-compatible API |
+
