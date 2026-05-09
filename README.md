@@ -247,8 +247,8 @@ Build the operator image and load it into Kind, then install with Helm from the 
 ```bash
 # Build the operator image
 cd preview-operator
-docker build -t ghcr.io/ihsenalaya/preview-operator:1.0.1 .
-kind load docker-image ghcr.io/ihsenalaya/preview-operator:1.0.1
+docker build -t ghcr.io/ihsenalaya/preview-operator:1.0.21 .
+kind load docker-image ghcr.io/ihsenalaya/preview-operator:1.0.21
 
 # Apply the CRD manually (Helm does not update CRDs on upgrade)
 kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
@@ -257,7 +257,7 @@ kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
-  --set image.tag=1.0.19 \
+  --set image.tag=1.0.21 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
 
@@ -1424,7 +1424,7 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.19** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.21** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1447,7 +1447,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.19** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.21** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1468,7 +1468,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.19                                            │
+│  Preview Operator 1.0.21                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
