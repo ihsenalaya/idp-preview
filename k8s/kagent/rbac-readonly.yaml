@@ -1,0 +1,76 @@
+---
+# ServiceAccount for the kagent troubleshooter agent.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagent-troubleshooter
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+
+---
+# ClusterRole: read-only access to everything the agent needs to diagnose
+# preview environments. No write verbs — never mutate the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kagent-troubleshooter-readonly
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+rules:
+  # Core resources — read only
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - events
+      - persistentvolumeclaims
+      - resourcequotas
+    verbs: [get, list, watch]
+
+  # Batch jobs (test suites, AI jobs, Microcks contract tests)
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+
+  # Apps workloads
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+
+  # Networking
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch]
+
+  # Preview Operator CRDs
+  - apiGroups: [platform.company.io]
+    resources: [previews, previews/status]
+    verbs: [get, list, watch]
+
+  # Secrets are intentionally excluded — agent should never read secrets.
+  # If diagnosis requires a secret value, a human must retrieve it manually.
+
+---
+# Bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagent-troubleshooter-readonly
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kagent-troubleshooter-readonly
+subjects:
+  - kind: ServiceAccount
+    name: kagent-troubleshooter
+    namespace: kagent-system
