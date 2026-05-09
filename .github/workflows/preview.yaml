@@ -120,19 +120,6 @@ jobs:
             --from-literal=token='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Pre-create preview namespace with GHCR pull secret
-        run: |
-          PR_NS="preview-pr-${{ github.event.pull_request.number }}"
-          kubectl create namespace "$PR_NS" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create secret docker-registry ghcr-pull-secret \
-            --namespace="$PR_NS" \
-            --docker-server=ghcr.io \
-            --docker-username='${{ github.actor }}' \
-            --docker-password='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl patch serviceaccount default -n "$PR_NS" \
-            -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
-
       - name: Apply Preview manifest
         run: |
           kubectl apply -f - <<EOF
