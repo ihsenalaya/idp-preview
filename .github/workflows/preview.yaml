@@ -35,6 +35,39 @@ jobs:
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
 
+      - name: Import OpenAPI spec into Microcks
+        run: |
+          SPEC=$(cat api/openapi.yaml | base64 -w0)
+          kubectl run microcks-import-${{ github.run_id }} \
+            --namespace=microcks \
+            --image=python:3.11-slim \
+            --restart=Never \
+            --env="SPEC=$SPEC" \
+            --command -- python3 -c "
+import os,base64,urllib.request,urllib.parse,json,sys
+spec=base64.b64decode(os.environ['SPEC']).decode()
+data=urllib.parse.urlencode({'grant_type':'password','client_id':'microcks-serviceaccount','client_secret':'ab54d329-e435-41ae-a900-ec6b3fe15c54','username':'manager','password':'microcks123'}).encode()
+req=urllib.request.Request('http://microcks-keycloak.microcks.svc.cluster.local:8080/realms/microcks/protocol/openid-connect/token',data=data,method='POST',headers={'Content-Type':'application/x-www-form-urlencoded'})
+with urllib.request.urlopen(req,timeout=10) as r:
+    tok=json.loads(r.read())['access_token']
+b=b'----bnd9'
+body=b'--'+b+b'\r\nContent-Disposition: form-data; name=\"file\"; filename=\"openapi.yaml\"\r\nContent-Type: application/yaml\r\n\r\n'+spec.encode()+b'\r\n--'+b+b'--\r\n'
+req2=urllib.request.Request('http://microcks.microcks.svc.cluster.local:8080/api/artifact/import?mainArtifact=true',data=body,method='POST',headers={'Authorization':'Bearer '+tok,'Content-Type':'multipart/form-data; boundary='+b.decode()})
+try:
+    with urllib.request.urlopen(req2,timeout=30) as r:
+        print('Microcks import OK:',r.status)
+except urllib.error.HTTPError as e:
+    body=e.read().decode()[:300]
+    print('Microcks import error:',e.code,body,file=sys.stderr)
+    sys.exit(1)
+"
+          kubectl wait pod/microcks-import-${{ github.run_id }} \
+            --namespace=microcks \
+            --for=condition=Ready \
+            --timeout=60s 2>/dev/null || true
+          kubectl logs -n microcks microcks-import-${{ github.run_id }} 2>/dev/null || true
+          kubectl delete pod microcks-import-${{ github.run_id }} -n microcks --ignore-not-found
+
       - name: Create GHCR auth secret
         run: |
           if [ -z '${{ secrets.PREVIEW_GITHUB_TOKEN }}' ]; then

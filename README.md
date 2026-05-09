@@ -1,626 +1,219 @@
 # idp-preview — Preview Platform
 
-Demo application and reference implementation for the **Preview Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, and AI-generated seed data.
+Demo application and reference implementation for the **Preview Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own PostgreSQL database, ingress URL, full test pipeline, AI-generated seed data, distributed traces, and automated failure analysis via kagent.
 
 ---
 
 ## Table of Contents
 
-1. [General Architecture](#1-general-architecture)
+1. [Architecture](#1-architecture)
 2. [Prerequisites](#2-prerequisites)
-3. [Cluster Installation](#3-cluster-installation)
-4. [The Preview Custom Resource](#4-the-preview-custom-resource)
-5. [Controller Deep Dive](#5-controller-deep-dive)
-6. [Test Suite Orchestration](#6-test-suite-orchestration)
-7. [AI Enrichment Orchestration](#7-ai-enrichment-orchestration)
-8. [GitHub Integration](#8-github-integration)
-9. [Copilot Extension](#9-copilot-extension)
-10. [Application Reference](#10-application-reference)
-11. [Troubleshooting](#11-troubleshooting)
+3. [AKS Cluster Installation](#3-aks-cluster-installation)
+4. [GitHub Actions Runner Setup](#4-github-actions-runner-setup)
+5. [The Preview Custom Resource](#5-the-preview-custom-resource)
+6. [Test Suite](#6-test-suite)
+7. [Contract Testing with Microcks](#7-contract-testing-with-microcks)
+8. [AI Enrichment](#8-ai-enrichment)
+9. [kagent — Automated Failure Analysis](#9-kagent--automated-failure-analysis)
+10. [Distributed Tracing with Jaeger](#10-distributed-tracing-with-jaeger)
+11. [GitHub Integration](#11-github-integration)
+12. [Application Reference](#12-application-reference)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. General Architecture
-
-### End-to-end workflow — from PR to TTL expiry or close
+## 1. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  Developer                                                                      │
-│   git push origin feat/my-feature                                               │
-│   gh pr create                                                                  │
-└────────────────────────────┬────────────────────────────────────────────────────┘
-                             │ pull_request: opened / synchronize / reopened
-                             ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  GitHub Actions  (.github/workflows/preview.yaml)                               │
-│  runs-on: [self-hosted, kind]  ← runner pod inside the cluster                 │
-│                                                                                 │
-│  1. Kaniko Job  ──────► build image from git HEAD ──► push to GHCR             │
-│  2. github.rest.repos.createDeployment() ──► returns deploymentId              │
-│  3. kubectl apply Secret (PREVIEW_GITHUB_TOKEN)                                │
-│  4. kubectl apply Preview CR ──► name: pr-<N>                                 │
-│  5. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
-└────────────────────────────┬────────────────────────────────────────────────────┘
-                             │ CR created / updated in etcd
-                             ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  Preview Operator  (controller-runtime reconcile loop)                         │
-│                                                                                 │
-│  PHASE: Pending ──► (requiresApproval gate)                                    │
-│                                                                                 │
-│  PHASE: Provisioning                                                            │
-│    ├── Create Namespace      preview-pr-<N>                                    │
-│    ├── Create ResourceQuota  (tier: small / medium / large)                    │
-│    ├── Provision PostgreSQL  (Deployment + Service + Secret)                   │
-│    ├── Run Migration Job     (optional — if spec.database.migration)           │
-│    ├── Run Seed Job          (optional — if spec.database.seed)                │
-│    ├── Deploy Services       svc-backend (app.py:8080) + svc-frontend (3000)  │
-│    ├── Create Ingress        /api → backend   / → frontend                    │
-│    ├── Inject OTel           annotation → sidecar injected by OTel operator    │
-│    └── Post GitHub comment   "🔄 Provisioning en cours…"                      │
-│                                                                                 │
-│  PHASE: Running                                                                 │
-│    ├── Post GitHub Deployment: success + URL                                   │
-│    ├── Post PR comment: "## Preview Preview Ready"                            │
-│    │                                                                            │
-│    ├── [AI ENRICHMENT — runs first, blocks tests until done]                  │
-│    │     step 1: schema-dump Job   ──► pg_dump --schema-only                  │
-│    │     step 2: ai-generate Job   ──► call LLM → seed.sql + test.py          │
-│    │     step 3: ai-seed Job       ──► psql seed.sql → 10 products, reviews  │
-│    │     step 4: ai-tests Job      ──► python test.py                         │
-│    │                                                                            │
-│    └── [TEST SUITE — starts only after AI enrichment Succeeded or Failed]     │
-│          step 1: suite-checkpoint-save     ──► pg_dump → ConfigMap            │
-│          step 2: smoke-tests               ──► /healthz + /api/products       │
-│          step 3: suite-restore-regression  ──► TRUNCATE + psql replay         │
-│          step 4: regression-tests          ──► tests/regression.py            │
-│          step 5: suite-restore-e2e         ──► TRUNCATE + psql replay         │
-│          step 6: e2e-tests (Playwright)    ──► tests/e2e.py                   │
-│                                                                                 │
-│  PHASE: Terminating                                                             │
-│    ├── Delete all namespace resources                                          │
-│    ├── Delete namespace                                                        │
-│    └── GitHub Deployment: inactive                                             │
-└────────────────────────────┬────────────────────────────────────────────────────┘
-                             │
-          ┌──────────────────┼──────────────────────┐
-          │                  │                       │
-          ▼                  ▼                       ▼
-    PR merged /        TTL expired             @preview
-    PR closed          (default 48h)           retest-ai
-          │                  │                       │
-          └──────────────────┘                       │
-                   │                                 │
-    cleanup.yaml   │                         AI-only rerun cycle
-    kubectl delete Preview ◄────────────┐   (skips smoke/regression/e2e)
-    finalizer teardown                   │
-    GitHub Deployment: inactive          │
-                                         └─ spec.aiEnrichment.rerunRequested=true
+Pull Request opened
+       │
+       ▼
+GitHub Actions (self-hosted, AKS)
+  ├── Kaniko builds & pushes image → ghcr.io
+  ├── Imports OpenAPI spec → Microcks
+  └── Applies Preview CR
+             │
+             ▼
+    Preview Operator (preview-operator-system)
+      ├── Creates namespace preview-pr-<N>
+      ├── Deploys backend + frontend services
+      ├── Provisions PostgreSQL sidecar
+      ├── Creates ingress (pr-<N>.preview.localtest.me)
+      └── Orchestrates test pipeline:
+            smoke → contract (Microcks) → regression → e2e (Playwright)
+                        │
+                        ▼ on failure
+              kagent (preview-troubleshooter-agent)
+                ├── Inspects K8s resources
+                ├── Queries Jaeger traces
+                └── Posts AI analysis → GitHub PR comment
 ```
 
-### Namespace isolation per PR
+**Key components:**
 
-```
-cluster
-├── preview-operator-system/          ← operator + extension
-│     └── preview-operator pod
-├── github-runner/                     ← self-hosted Actions runner + Kaniko jobs
-├── observability/                     ← Jaeger + OTel Collector + Instrumentation
-│
-├── preview-pr-1/                      ┐
-│     ├── svc-backend  (app.py:8080)   │  isolated namespace
-│     ├── svc-frontend (frontend:3000) │  one per open PR
-│     ├── postgres                     │
-│     ├── Ingress (pr-1.preview.*)     │
-│     └── Jobs (test/AI/restore…)      ┘
-│
-├── preview-pr-2/                      ┐
-│     └── (same structure)             │  PR #2 is completely independent
-│                                      ┘
-└── preview-pr-N/ …
-```
+| Component | Namespace | Role |
+|-----------|-----------|------|
+| preview-operator | preview-operator-system | Reconciles Preview CRs |
+| GitHub Actions runner | github-runner | Runs CI workflows on AKS |
+| Microcks | microcks | OpenAPI contract validation |
+| Jaeger | observability | Distributed trace storage |
+| kagent | kagent-system | AI-powered K8s agent (Google ADK) |
+| Jaeger MCP Server | kagent-system | Exposes Jaeger traces as MCP tools |
 
 ---
 
 ## 2. Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Docker | 24+ | https://docs.docker.com/get-docker/ |
-| Kind | 0.25+ | `go install sigs.k8s.io/kind@latest` |
-| kubectl | 1.28+ | https://kubernetes.io/docs/tasks/tools/ |
-| Helm | 3.14+ | https://helm.sh/docs/intro/install/ |
-| gh CLI | 2.0+ | https://cli.github.com/ |
+- AKS cluster (tested with `preview-cluster`, resource group `kubebuilder`)
+- `kubectl` configured against the cluster
+- `helm` v3+
+- `gh` CLI authenticated
+- GHCR package set to **public** (or configure pull secrets)
+- Azure OpenAI resource (for AI enrichment and kagent LLM)
 
 ---
 
-## 3. Cluster Installation
+## 3. AKS Cluster Installation
 
-### Step 0 — Add Helm repositories
-
-Run once before any install step.
+### 3.1 Preview Operator
 
 ```bash
-helm repo add jetstack       https://charts.jetstack.io
-helm repo add ingress-nginx  https://kubernetes.github.io/ingress-nginx
-helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
-helm repo add microcks       https://microcks.io/helm
-helm repo update
-```
-
-### Step 1 — Create the Kind cluster
-
-```bash
-kind create cluster --name testing
-kubectl get nodes
-# NAME                    STATUS   ROLES           AGE   VERSION
-# testing-control-plane   Ready    control-plane   …     v1.35.0
-```
-
-### Step 2 — Install cert-manager
-
-```bash
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  --version v1.20.2 \
-  --set crds.enabled=true \
-  --wait
-
-kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
-kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
-```
-
-### Step 3 — Install ingress-nginx
-
-> Do **not** pin a version — older releases are removed from the repo index over time.
-
-**Important:** disable admission webhooks. In Kind, the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with `x509: certificate signed by unknown authority`.
-
-```bash
-helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --create-namespace \
-  --set controller.admissionWebhooks.enabled=false \
-  --wait
-
-kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
-```
-
-If already installed without this flag:
-
-```bash
-helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --set controller.admissionWebhooks.enabled=false \
-  --wait
-
-kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
-```
-
-> **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the Preview](#accessing-the-preview)).
-
-### Step 4 — Install the Preview Operator
-
-Build the operator image and load it into Kind, then install with Helm from the local chart.
-
-```bash
-# Build the operator image
-cd preview-operator
-docker build -t ghcr.io/ihsenalaya/preview-operator:1.0.1 .
-kind load docker-image ghcr.io/ihsenalaya/preview-operator:1.0.1
-
-# Apply the CRD manually (Helm does not update CRDs on upgrade)
-kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
-
-# Install the Helm chart
-helm install preview-operator ./charts/preview-operator \
+helm upgrade --install preview-operator \
+  oci://ghcr.io/ihsenalaya/charts/preview-operator \
+  --version 1.0.5 \
   --namespace preview-operator-system \
-  --create-namespace \
-  --set image.tag=1.0.1 \
-  --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
-
-kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
-kubectl get crd previews.platform.company.io
-```
-
-#### Upgrading the operator
-
-```bash
-# Rebuild and reload image
-docker build -t ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION> .
-kind load docker-image ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION>
-
-# Apply updated CRD
-kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
-
-# Upgrade the Helm release
-helm upgrade preview-operator ./charts/preview-operator \
-  --namespace preview-operator-system \
-  --set image.tag=<NEW_VERSION> \
-  --reuse-values
-
-kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
-```
-
-### Step 4b — Install Microcks
-
-Microcks provides in-cluster OpenAPI contract testing. Get the Kind node IP first:
-
-```bash
-NODE_IP=$(kubectl get nodes -o wide | grep control-plane | awk '{print $6}')
-# e.g. 172.18.0.2
-
-helm install microcks microcks/microcks \
-  --namespace microcks \
-  --create-namespace \
-  --set "microcks.url=microcks.${NODE_IP}.nip.io" \
-  --set "microcks.ingressClassName=nginx" \
-  --set "microcks.generateCert=false" \
-  --set "keycloak.url=keycloak.${NODE_IP}.nip.io" \
-  --set "keycloak.ingressClassName=nginx" \
-  --set "keycloak.generateCert=false"
-
-kubectl -n microcks rollout status deployment/microcks --timeout=180s
-```
-
-The operator creates test jobs that call Microcks at `http://microcks.microcks.svc.cluster.local:8080` — no ingress needed for in-cluster communication.
-
-### Step 4c — Install kagent
-
-kagent orchestrates AI agents inside Kubernetes. Install CRDs first, then the main chart.
-
-```bash
-# CRDs must be installed before the main chart
-helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
-  --namespace kagent-system \
   --create-namespace
-
-helm install kagent oci://ghcr.io/kagent-dev/kagent/helm/kagent \
-  --namespace kagent-system
-
-kubectl -n kagent-system rollout status deployment/kagent-controller --timeout=120s
 ```
 
-#### Create the Azure OpenAI secret for kagent
-
-```bash
-# Create an Azure OpenAI resource (if not already done)
-az cognitiveservices account create \
-  --name "preview-openai" \
-  --resource-group "<YOUR_RG>" \
-  --kind "OpenAI" \
-  --sku "S0" \
-  --location "eastus"
-
-az cognitiveservices account deployment create \
-  --name "preview-openai" \
-  --resource-group "<YOUR_RG>" \
-  --deployment-name "gpt-4o-mini" \
-  --model-name "gpt-4o-mini" \
-  --model-version "2024-07-18" \
-  --model-format "OpenAI" \
-  --sku-name "GlobalStandard" \
-  --sku-capacity 30
-
-AOAI_KEY=$(az cognitiveservices account keys list \
-  --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "key1" -o tsv)
-
-# Secret for kagent agents
-kubectl create secret generic kagent-openai \
-  --namespace kagent-system \
-  --from-literal=OPENAI_API_KEY="$AOAI_KEY"
-
-# Secret for the operator AI enrichment
-kubectl create secret generic azure-openai-credentials \
-  --namespace preview-operator-system \
-  --from-literal=api-key="$AOAI_KEY"
-```
-
-#### Configure kagent ModelConfig for Azure OpenAI
-
-```bash
-kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p '{
-  "spec": {
-    "provider": "AzureOpenAI",
-    "model": "gpt-4o-mini",
-    "apiKeySecret": "kagent-openai",
-    "apiKeySecretKey": "OPENAI_API_KEY",
-    "azureOpenAI": {
-      "azureEndpoint": "https://preview-openai-<ID>.openai.azure.com",
-      "azureDeployment": "gpt-4o-mini",
-      "apiVersion": "2024-10-21"
-    }
-  }
-}'
-```
-
-#### Deploy the preview troubleshooter agent
-
-```bash
-kubectl apply -f k8s/kagent/rbac-readonly.yaml
-kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
-
-# Verify
-kubectl get agent preview-troubleshooter-agent -n kagent-system
-```
-
-### Step 5 — Install OpenTelemetry Operator
-
-```bash
-helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
-  --namespace opentelemetry-operator-system \
-  --create-namespace \
-  --set admissionWebhooks.certManager.enabled=true \
-  --set manager.collectorImage.repository=otel/opentelemetry-collector-contrib \
-  --wait
-
-kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry-operator --timeout=120s
-```
-
-### Step 6 — Deploy Jaeger and OTel Collector
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/jaeger.yaml
-kubectl -n observability rollout status deployment/jaeger --timeout=120s
-
-kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/otel.yaml
-kubectl -n observability rollout status deployment/otel-collector --timeout=120s
-
-kubectl get otelcol -n observability
-kubectl get instrumentation -n observability
-```
-
-### Step 7 — Deploy the self-hosted GitHub Actions runner
-
-#### 7.1 Generate a runner registration token
-
-> Tokens expire after **1 hour**. Regenerate whenever the runner pod restarts.
-
-```bash
-gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token'
-```
-
-#### 7.2 Apply runner.yaml
-
-Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, `<TOKEN>`:
-
-```yaml
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: github-runner
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: github-runner
-  namespace: github-runner
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: github-runner-admin
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-  - kind: ServiceAccount
-    name: github-runner
-    namespace: github-runner
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: github-runner
-  namespace: github-runner
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: github-runner
-  template:
-    metadata:
-      labels:
-        app: github-runner
-    spec:
-      serviceAccountName: github-runner
-      containers:
-        - name: runner
-          image: myoung34/github-runner:latest
-          env:
-            - name: REPO_URL
-              value: https://github.com/<YOUR_OWNER>/<YOUR_REPO>
-            - name: RUNNER_TOKEN
-              value: <TOKEN>
-            - name: RUNNER_NAME
-              value: kind-cluster-runner
-            - name: RUNNER_WORKDIR
-              value: /tmp/runner
-            - name: LABELS
-              value: self-hosted,kind
-            - name: EPHEMERAL
-              value: "false"
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 1000m
-              memory: 1Gi
-          volumeMounts:
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
-      volumes:
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock
-```
-
-```bash
-kubectl apply -f runner.yaml
-kubectl -n github-runner rollout status deployment/github-runner --timeout=120s
-kubectl logs -n github-runner deployment/github-runner --tail=5
-# Expected last line: "Listening for Jobs"
-```
-
-> **Note:** `myoung34/github-runner:latest` is ~1 GB. The first pull can take several minutes inside Kind.
-
-#### 7.3 Set the GitHub Actions secret
-
-```bash
-gh secret set PREVIEW_GITHUB_TOKEN \
-  --repo <OWNER>/<REPO> \
-  --body "<YOUR_GITHUB_PAT>"
-```
-
-Minimum token permissions:
-
-| Permission | Level |
-|---|---|
-| `write:packages` | Required — Kaniko pushes to GHCR |
-| `Contents` | read |
-| `Pull requests` | read |
-| `Issues` | write |
-| `Deployments` | write |
-
-#### 7.4 Create the operator secret
+Create the GitHub token secret (used by the operator to post PR comments):
 
 ```bash
 kubectl create secret generic preview-github-token \
-  --namespace preview-operator-system \
-  --from-literal=token="<YOUR_GITHUB_PAT>"
+  --namespace=preview-operator-system \
+  --from-literal=token=<your-github-pat>
 ```
 
-#### 7.5 Configure AI enrichment (optional)
-
-**GitHub Models (free tier)**
+### 3.2 Microcks
 
 ```bash
-kubectl create secret generic ai-api-key \
-  --namespace preview-operator-system \
-  --from-literal=api-key="<YOUR_GITHUB_TOKEN>"
-
-kubectl set env deployment/preview-operator \
-  AI_API_URL=https://models.inference.ai.azure.com \
-  -n preview-operator-system
+helm repo add microcks https://microcks.io/helm
+helm upgrade --install microcks microcks/microcks \
+  --namespace microcks --create-namespace \
+  --set microcks.url=microcks.<ingress-ip>.nip.io \
+  --set keycloak.url=keycloak.<ingress-ip>.nip.io
 ```
 
-**OpenAI**
+### 3.3 Jaeger (OpenTelemetry)
 
 ```bash
-kubectl create secret generic ai-api-key \
-  --namespace preview-operator-system \
-  --from-literal=api-key="sk-..."
-# No AI_API_URL override needed — the operator default is https://api.openai.com/v1
+kubectl apply -f otel.yaml       # OpenTelemetry Collector
+kubectl apply -f jaeger.yaml     # Jaeger all-in-one
 ```
 
-#### Renew runner token (when token expires)
+### 3.4 kagent
 
 ```bash
-NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
-kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
-kubectl rollout restart deployment/github-runner -n github-runner
-kubectl logs -n github-runner deployment/github-runner --tail=5
-# Expected: "Listening for Jobs"
+helm repo add kagent https://kagent-dev.github.io/kagent/helm
+helm upgrade --install kagent kagent/kagent \
+  --namespace kagent-system --create-namespace \
+  --set providers.azure.endpoint=https://<your-aoai>.openai.azure.com \
+  --set providers.azure.deployment=gpt-4o-mini \
+  --set providers.azure.apiVersion=2024-10-21
+```
+
+Create the Azure OpenAI API key secret (strip any trailing whitespace):
+
+```bash
+kubectl create secret generic kagent-openai \
+  --namespace=kagent-system \
+  --from-literal=OPENAI_API_KEY=<your-azure-openai-key>
+```
+
+Deploy the preview troubleshooter agent and Jaeger MCP server:
+
+```bash
+kubectl apply -f k8s/kagent/
 ```
 
 ---
 
-## 4. The Preview Custom Resource
+## 4. GitHub Actions Runner Setup
 
-### Complete annotated example
+```bash
+# Create runner namespace
+kubectl apply -f runner.yaml
+
+# Create GHCR pull secret for the runner
+kubectl create secret docker-registry ghcr-pull-secret \
+  --namespace=github-runner \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password=<github-pat>
+```
+
+The runner is registered as `self-hosted, aks` and picked up by the `preview.yaml` workflow.
+
+---
+
+## 5. The Preview Custom Resource
+
+The workflow applies a `Preview` CR that drives the entire lifecycle:
 
 ```yaml
 apiVersion: platform.company.io/v1alpha1
 kind: Preview
 metadata:
-  name: pr-42
+  name: pr-<N>
 spec:
-
-  # ── Identity ───────────────────────────────────────────────────────────────
-  branch: feature/my-feature
-  prNumber: 42
-  image: ghcr.io/ihsenalaya/idp-preview:sha-abc   # ignored when services[] is set
-  ttl: 48h                                          # default 48h — supports: 1h 24h 72h etc.
-  resourceTier: medium                              # small | medium | large
-
-  # ── Multi-service (frontend + backend) ────────────────────────────────────
+  branch: <branch>
+  prNumber: <N>
+  image: ghcr.io/<repo>:<sha>
+  resourceTier: medium
+  ttl: 48h
   services:
     - name: backend
-      image: ghcr.io/ihsenalaya/idp-preview:sha-abc
       port: 8080
-      pathPrefix: /api          # ingress routes /api/* → svc-backend:8080
+      pathPrefix: /api
     - name: frontend
-      image: ghcr.io/ihsenalaya/idp-preview:sha-abc
       port: 3000
-      pathPrefix: /             # ingress routes /* → svc-frontend:3000
-      env:
-        - name: APP_MODE
-          value: frontend       # switches entrypoint to frontend.py
-        - name: PREVIEW_PR
-          value: "42"
-        - name: PREVIEW_BRANCH
-          value: feature/my-feature
-
-  # ── Approval gate (optional) ───────────────────────────────────────────────
-  requiresApproval: false
-  # approvedBy: platform-team  # unblocks when requiresApproval=true
-
-  # ── Database ───────────────────────────────────────────────────────────────
+      pathPrefix: /
   database:
     enabled: true
     databaseName: appdb
-    # migration:
-    #   enabled: true           # runs an Alembic Job (optional)
-    # seed:
-    #   enabled: true           # runs a static seed Job (optional)
-
-  # ── Telemetry ──────────────────────────────────────────────────────────────
   telemetry:
     enabled: true
-    serviceName: idp-preview-pr-42
+    serviceName: idp-testing
     autoInstrumentation:
       language: python
       instrumentationRef: observability/python
-
-  # ── Test Suite ─────────────────────────────────────────────────────────────
   testSuite:
     enabled: true
-    smoke: {}                   # built-in — no config needed
+    smoke: {}
+    contractTesting:
+      enabled: true
+      microcksURL: http://microcks.microcks.svc.cluster.local:8080
+      apiName: Preview Catalog API
+      apiVersion: "1.0.0"
     regression:
-      enabled: true             # runs /app/tests/regression.py
+      enabled: true
     e2e:
-      enabled: true             # runs /app/tests/e2e.py (Playwright/Chromium)
-
-  # ── AI Enrichment ──────────────────────────────────────────────────────────
+      enabled: true
   aiEnrichment:
     enabled: true
     apiSecretRef:
       name: ai-api-key
       key: api-key
-    githubTokenSecretRef:
-      name: preview-github-token
-      namespace: preview-operator-system
-      key: token
-    model: gpt-4o-mini          # gpt-4o-mini (fast + cheap) | gpt-4o (better quality)
-    seed:
-      enabled: true             # generates + runs seed.sql
-    tests:
-      enabled: true             # generates + runs test.py
-    # rerunRequested: true      # set by @preview retest-ai — triggers AI-only rerun
-
-  # ── GitHub integration ─────────────────────────────────────────────────────
+    model: gpt-4o-mini
+  kagent:
+    enabled: true
+    namespace: kagent-system
+    agentName: preview-troubleshooter-agent
   github:
     enabled: true
-    owner: ihsenalaya
-    repo: idp-preview
-    deploymentId: 123456789     # returned by github.rest.repos.createDeployment()
-    environment: pr-42
+    owner: <owner>
+    repo: <repo>
+    deploymentId: <id>
+    environment: pr-<N>
     commentOnReady: true
     tokenSecretRef:
       name: preview-github-token
@@ -628,930 +221,209 @@ spec:
       key: token
 ```
 
-### Environment variables injected automatically into every service pod
+---
 
-| Variable | Value |
-|---|---|
-| `DATABASE_URL` | `postgresql://preview_42:<pw>@postgres:5432/appdb` |
-| `POSTGRES_USER` | `preview_42` |
-| `POSTGRES_PASSWORD` | auto-generated |
-| `POSTGRES_DB` | `appdb` |
-| `PREVIEW_BRANCH` | `feature/my-feature` |
-| `PREVIEW_PR` | `42` |
-| `OTEL_SERVICE_NAME` | `idp-preview-pr-42` |
-| `OTEL_RESOURCE_ATTRIBUTES` | `preview.name=pr-42,preview.pr_number=42,…` |
+## 6. Test Suite
 
-### Resource tiers
+The operator runs tests sequentially after the preview environment is ready:
 
-| Tier | CPU request | CPU limit | Memory request | Memory limit |
-|------|-------------|-----------|----------------|--------------|
-| `small` | 50m | 200m | 64Mi | 256Mi |
-| `medium` | 100m | 500m | 128Mi | 512Mi |
-| `large` | 250m | 1000m | 256Mi | 1Gi |
+| Suite | Runner | What it tests |
+|-------|--------|---------------|
+| **Smoke** | requests | `/healthz` + `/api/products` — basic liveness |
+| **Contract** | Microcks OPEN_API_SCHEMA | All API endpoints validated against `api/openapi.yaml` |
+| **Regression** | requests | Full HTTP API coverage (9 tests) |
+| **E2E** | Playwright (Chromium) | Browser UI — product grid, filters, detail panel |
 
-### Lifecycle phases
-
-```
-Pending       → requiresApproval=true, waiting for approvedBy to be set
-Provisioning  → namespace, PostgreSQL, services, ingress being created
-Running       → all resources ready, URL reachable, AI + tests executing
-Terminating   → PR closed / TTL expired, finalizer tearing down namespace
-Failed        → reconcile error — diagnostics + pod logs captured in status
-```
+Results are posted as a GitHub PR comment by the operator.
 
 ---
 
-## 5. Controller Deep Dive
+## 7. Contract Testing with Microcks
 
-### Reconcile loop — step by step
+The `api/openapi.yaml` file defines the contract for `Preview Catalog API v1.0.0`.
 
-The controller uses **controller-runtime** and follows the standard Kubernetes reconciler pattern. Every event (CR create/update, owned resource change, requeue timer) triggers a reconcile call. The function is fully **idempotent** — re-running it at any step produces the same result.
+The workflow **imports this spec into Microcks** at the start of every run so the contract is always up-to-date. Microcks then validates every API endpoint response schema against the spec using `OPEN_API_SCHEMA` runner.
 
+The operator submits the test to Microcks via:
 ```
-Reconcile(ctx, req)
-     │
-     ├── 1. Fetch Preview CR  (return nil if NotFound)
-     │
-     ├── 2. Deletion?  ──► handleDeletion()
-     │         └── remove namespace, owned resources, then remove finalizer
-     │
-     ├── 3. Add finalizer if missing  (guarantees teardown runs on delete)
-     │
-     ├── 4. TTL expired?  ──► patch status Expired + r.Delete(preview)
-     │
-     ├── 5. Approval gate?  ──► return RequeueAfter=30s  (phase=Pending)
-     │
-     ├── 6. reconcileNamespace()     ──► create preview-pr-<N>
-     │
-     ├── 7. reconcileResourceQuota() ──► apply tier limits
-     │
-     ├── 8. reconcileDatabase()      ──► postgres Deployment + Service + Secret
-     │         ├── wait DB ready (RequeueAfter=5s if not)
-     │         ├── reconcileMigration() (optional Job)
-     │         └── reconcileSeed()     (optional Job)
-     │
-     ├── 9. reconcileServices()      ──► one Deployment + Service per spec.services[]
-     │
-     ├── 10. reconcileIngress()      ──► nginx Ingress, path rules from pathPrefix
-     │
-     ├── 11. reconcileTelemetry()    ──► inject OTel annotation on pods
-     │
-     ├── 12. reconcileGitHub()       ──► Deployment status + PR comment (idempotent)
-     │
-     ├── 13. [phase = Running]
-     │
-     ├── 14. reconcileAIEnrichment() ──► (if enabled)
-     │         └── see §7 for full detail
-     │
-     └── 15. reconcileTestSuite()    ──► (if enabled AND AI done or disabled)
-               └── see §6 for full detail
-```
-
-### All Jobs created by the controller
-
-The controller never runs long operations inline — it delegates every side-effectful operation to a **Kubernetes Job**, then re-enters the reconcile loop to check completion.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  Job name                  │ Image         │ What it does                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  postgres-migrate          │ app image     │ Alembic migration (optional)   │
-│  postgres-seed             │ app image     │ static SQL seed (optional)     │
-│                             │               │                                │
-│  ── AI Enrichment ──────────┼───────────────┼──────────────────────────────│
-│  ai-schema-dump            │ postgres:15   │ pg_dump --schema-only          │
-│  ai-generate               │ python:3.11   │ call LLM → seed.sql + test.py  │
-│  ai-seed                   │ postgres:15   │ psql seed.sql → inserts data   │
-│  ai-tests                  │ python:3.11   │ pip install + python test.py   │
-│                             │               │                                │
-│  ── Test Suite ─────────────┼───────────────┼──────────────────────────────│
-│  suite-checkpoint-save     │ postgres:15   │ pg_dump --data-only → ConfigMap│
-│  smoke-tests               │ python:3.11   │ embedded smoke script          │
-│  suite-restore-regression  │ postgres:15   │ TRUNCATE + psql replay         │
-│  regression-tests          │ app image     │ tests/regression.py            │
-│  suite-restore-e2e         │ postgres:15   │ TRUNCATE + psql replay         │
-│  e2e-tests                 │ playwright    │ tests/e2e.py + Chromium        │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Status as the source of truth
-
-The controller tracks all progress in `status` — persisted in etcd. If the operator pod restarts mid-pipeline, it resumes exactly where it left off by reading the status fields.
-
-```bash
-kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
-```
-
-```json
+POST /api/tests
 {
-  "phase": "Running",
-  "url": "http://pr-42.preview.localtest.me:8080",
-  "namespaceName": "preview-pr-42",
-  "readyAt": "2026-05-08T09:00:00Z",
-  "expiresAt": "2026-05-10T09:00:00Z",
-  "database": {
-    "ready": true,
-    "host": "postgres",
-    "databaseName": "appdb",
-    "migration": "Succeeded",
-    "seed": "Skipped"
-  },
-  "aiEnrichment": {
-    "phase": "Succeeded",
-    "seedStatus": "Succeeded",
-    "testsStatus": "Succeeded",
-    "completedAt": "2026-05-08T09:05:00Z"
-  },
-  "tests": {
-    "phase": "Succeeded",
-    "step": "e2e",
-    "smoke":      { "phase": "Succeeded", "passed": 2, "failed": 0 },
-    "regression": { "phase": "Succeeded", "passed": 9, "failed": 0 },
-    "e2e":        { "phase": "Succeeded", "passed": 6, "failed": 0 }
-  },
-  "github": {
-    "deploymentState": "success",
-    "lastNotifiedPhase": "Running",
-    "commentId": 987654321,
-    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080"
-  }
+  "serviceId": "Preview Catalog API:1.0.0",
+  "testEndpoint": "http://svc-backend:8080",
+  "runnerType": "OPEN_API_SCHEMA"
 }
 ```
 
-### Key controller invariants
+---
 
-| Invariant | Why |
-|-----------|-----|
-| All operations are idempotent | Re-running reconcile after a crash is safe |
-| Jobs are looked up by name before creation | Prevents duplicate jobs |
-| Status is written after every significant state change | Enables crash recovery |
-| AI enrichment must complete before tests start | Tests need seeded data |
-| `status.tests.step` is persisted in etcd | Pipeline resumes at exact step after restart |
-| CRD schema must match Go types exactly | API server silently strips unknown fields — a mismatch causes infinite loops |
+## 8. AI Enrichment
 
-### Inspecting the pipeline
+When the preview starts, the operator calls Azure OpenAI to:
+1. Analyze the PR diff
+2. Generate SQL seed data matching the schema
+3. Generate a regression test script for the modified endpoints
+
+The seed data is inserted into PostgreSQL before tests run. Results appear in the operator status and the GitHub PR comment.
+
+Configure via the `ai-api-key` secret in `preview-operator-system`:
 
 ```bash
-# Quick overview
-kubectl get preview
-# NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
-# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me…    2026-05-10T09:00:00Z   2h
-
-# Current pipeline step
-kubectl get preview pr-42 -o jsonpath='{.status.tests.step}'
-
-# Watch jobs being created
-kubectl get jobs -n preview-pr-42 -w
-
-# Diagnostics on failure
-kubectl get preview pr-42 -o jsonpath='{.status.diagnostics}' | jq .
+kubectl create secret generic ai-api-key \
+  --namespace=preview-operator-system \
+  --from-literal=api-key=<azure-openai-key>
 ```
 
 ---
 
-## 6. Test Suite Orchestration
+## 9. kagent — Automated Failure Analysis
 
-### Why sequential, isolated, checkpoint-based
+When any test suite fails, the operator automatically calls the `preview-troubleshooter-agent` via the **A2A JSON-RPC protocol** (kagent v0.9+).
 
-A classic shared staging environment has two fatal problems:
+The agent:
+1. Inspects pods, jobs, and events in the preview namespace
+2. Queries Jaeger for error traces (via the Jaeger MCP server)
+3. Synthesizes an analysis with root cause and suggested fix
+4. Posts it as a **GitHub PR comment** (`## AI Failure Analysis by kagent`)
 
-- **Cross-PR pollution** — two PRs running simultaneously share the database; test data from PR #28 corrupts the assertions of PR #29.
-- **Unstable data** — staging accumulates data from previous runs; a test that expects 10 products may find 247.
+### Jaeger MCP Server
 
-The Preview controller solves both by giving each PR its own namespace + database, and by taking a **checkpoint** of the database immediately after the AI seed — then restoring to that checkpoint before every test suite, and again before every individual E2E test.
+A custom Python MCP server (`jaeger-mcp-server`) exposes three tools to the agent:
 
-### Full pipeline chronology
+| Tool | Description |
+|------|-------------|
+| `jaeger_get_services` | Lists services with traces in Jaeger |
+| `jaeger_get_traces` | Gets traces for a service, filterable by `error=true` |
+| `jaeger_get_trace` | Full span tree for a specific trace ID |
 
-```
-                     ┌─────────────────────────────────────────────────────┐
-                     │  Database state after AI seed                        │
-                     │  10 products, 3 categories, reviews, orders          │
-                     └───────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-checkpoint-save                           │
-                    │  pg_dump --data-only → ConfigMap "db-checkpoint-      │
-                    │  after-seed" in namespace preview-pr-<N>             │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: smoke-tests                                     │
-                    │  Image: python:3.11  (embedded smoke script)          │
-                    │  APP_URL=http://svc-backend:8080                      │
-                    │  Tests:                                               │
-                    │    PASS smoke /healthz: 200                          │
-                    │    PASS smoke /api/products: 200                     │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-restore-regression                        │
-                    │  TRUNCATE all tables + psql replay from ConfigMap     │
-                    │  → DB back to post-seed state                         │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: regression-tests                                │
-                    │  Image: app image                                     │
-                    │  APP_URL=http://svc-backend:8080                      │
-                    │  FRONTEND_URL=http://svc-frontend:3000                │
-                    │  Script: /app/tests/regression.py                    │
-                    │  Tests: 9 HTTP endpoint assertions                    │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-restore-e2e                               │
-                    │  TRUNCATE + psql replay                               │
-                    │  → DB back to post-seed state                         │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: e2e-tests                                       │
-                    │  Image: mcr.microsoft.com/playwright/python:v1.44.0  │
-                    │  APP_URL=http://svc-frontend:3000                     │
-                    │  FRONTEND_URL=http://svc-frontend:3000                │
-                    │  CHECKPOINT_API=http://preview-extension:8090/…     │
-                    │                                                       │
-                    │  test_catalog_page_loads    ← reset_db() first       │
-                    │  test_preview_badge_shown   ← reset_db() first       │
-                    │  test_product_detail_panel  ← reset_db() first       │
-                    │  test_related_section       ← reset_db() first       │
-                    │  test_discount_filter       ← reset_db() first       │
-                    │  test_close_detail          ← reset_db() first       │
-                    └───────────────────────────────────────────────────────┘
-```
+The server is deployed in `kagent-system` and registered as a `RemoteMCPServer` with SSE transport.
 
-### Two levels of database isolation
+### Agent Flow
 
 ```
-Level 1: between suites
-  suite-restore-regression  ──► full TRUNCATE + replay before regression
-  suite-restore-e2e         ──► full TRUNCATE + replay before E2E
-  Reason: regression tests can create/delete products, change stock, create
-          orders — any of that would break E2E assertions.
-
-Level 2: between each E2E test
-  reset_db() in tests/e2e.py ──► POST CHECKPOINT_API/restore before each test
-  Reason: Playwright tests click, fill forms, navigate — a test that opens a
-          detail panel changes page state for the next test.
+Operator detects test failure
+       │
+       ▼
+POST http://preview-troubleshooter-agent.kagent-system:8080
+     (A2A JSON-RPC, method: message/send)
+       │
+       ▼
+Agent (Google ADK + Azure OpenAI gpt-4o-mini)
+  ├── kubectl get pods/jobs/events -n preview-pr-<N>
+  ├── kubectl logs <failed-job> -n preview-pr-<N>
+  ├── jaeger_get_services
+  ├── jaeger_get_traces(service=idp-testing, tags=error=true)
+  └── jaeger_get_trace(<trace-id>)
+       │
+       ▼
+GitHub PR comment: "## AI Failure Analysis by kagent"
 ```
-
-### How reset_db() works in detail
-
-```
-e2e pod
-  │
-  ├── reset_db()  →  POST http://preview-extension/api/previews/pr-42/
-  │                       checkpoints/after-seed/restore
-  │
-  │   Extension patches CR:
-  │     spec.database.checkpointRestore = "after-seed"
-  │
-  │   Controller reconciles:
-  │     ├── creates restore Job (TRUNCATE + psql replay from ConfigMap)
-  │     ├── waits for Job completion
-  │     └── clears spec.database.checkpointRestore
-  │
-  │   Extension returns HTTP 200
-  │
-  └── Playwright test starts  (DB is now identical to post-seed state)
-```
-
-### Controller — how it tracks test progress
-
-The controller stores the current pipeline step in `status.tests.step`. Each reconcile call reads this field and creates the next job:
-
-```
-Reconcile() → reads status.tests.step
-  ""                   → set step="saving", create pg_dump job
-  "saving"             → pg_dump job complete? → set step="smoke"
-  "smoke"              → smoke job complete?   → set step="restore-regression"
-  "restore-regression" → restore complete?     → set step="regression"
-  "regression"         → regression complete?  → set step="restore-e2e"
-  "restore-e2e"        → restore complete?     → set step="e2e"
-  "e2e"                → e2e complete?         → set tests.phase="Succeeded"
-                          job still running    → RequeueAfter=10s
-```
-
-If a job is running, the controller returns `RequeueAfter=10s` and exits — it does not block the goroutine. The next reconcile checks job status again. This loop continues until the job finishes or fails.
-
-### Reading test results
-
-```bash
-# Summary
-kubectl get preview pr-42 -o jsonpath='{.status.tests}' | jq .
-
-# Per-suite
-kubectl get preview pr-42 -o jsonpath='{.status.tests.smoke}'
-kubectl get preview pr-42 -o jsonpath='{.status.tests.regression}'
-kubectl get preview pr-42 -o jsonpath='{.status.tests.e2e}'
-
-# Live logs during execution
-kubectl logs -n preview-pr-42 job/smoke-tests -f
-kubectl logs -n preview-pr-42 job/regression-tests -f
-kubectl logs -n preview-pr-42 job/e2e-tests -f
-```
-
-### PR comment produced automatically
-
-```
-## Preview Test Suite Results
-
-**Overall: ✅ Succeeded**
-
-| Suite      | Status       | Passed | Failed |
-|------------|--------------|--------|--------|
-| Smoke      | ✅ Succeeded | 2      | 0      |
-| Regression | ✅ Succeeded | 9      | 0      |
-| E2E        | ✅ Succeeded | 6      | 0      |
-```
-
-### What each test validates
-
-| Suite | Script | Target | Validates |
-|-------|--------|--------|-----------|
-| Smoke | embedded in operator | `svc-backend:8080` | Deployment is healthy — `/healthz` 200, `/api/products` 200 |
-| Regression | `tests/regression.py` | `svc-backend:8080` | All existing endpoints return correct status + response structure on a real DB |
-| E2E | `tests/e2e.py` | `svc-frontend:3000` | Full user flows: browse catalogue, open product detail, related products, discount filter, close panel |
 
 ---
 
-## 7. AI Enrichment Orchestration
+## 10. Distributed Tracing with Jaeger
 
-### Why before tests
+The application is auto-instrumented via OpenTelemetry. Traces are collected by the OTel Collector and stored in Jaeger.
 
-The AI seed job inserts realistic product data — names, descriptions, prices, discounts, reviews. The regression and E2E tests depend on this data being present. The controller therefore **blocks the test suite until AI enrichment is Succeeded or Failed** (in which case tests run on an empty or partially seeded DB, which is still better than running before the seed).
-
-```go
-// controller logic — tests.go
-if aiEnrichmentEnabled(preview) {
-    aiPhase := preview.Status.AIEnrichment.Phase
-    if aiPhase != "Succeeded" && aiPhase != "Failed" {
-        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-    }
-}
-// only reaches here when AI is done
-reconcileTestSuite(...)
-```
-
-### Full AI enrichment pipeline
-
-```
-Preview reaches Running phase
-           │
-           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Job: ai-schema-dump                                                 │
-│  Image: postgres:15                                                  │
-│  pg_dump --schema-only → stored in ConfigMap "ai-schema"            │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │
-           ┌────────────────────▼─────────────────────────────────────┐
-           │  Controller: fetch PR diff via GitHub API                 │
-           │  GET /repos/{owner}/{repo}/pulls/{prNumber}/files        │
-           └────────────────────┬─────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼──────────────────────────────────────┐
-│  Job: ai-generate                                                    │
-│  Image: python:3.11                                                  │
-│                                                                      │
-│  Prompt includes:                                                    │
-│    - DB schema (from ConfigMap)                                      │
-│    - PR diff (lines changed)                                         │
-│    - system prompt (from operator config or @preview set-prompt)   │
-│                                                                      │
-│  LLM produces:                                                       │
-│    seed.sql  → INSERT INTO categories…; INSERT INTO products…;      │
-│               At least 10 products across 3 categories,             │
-│               2 reviews per product (varied 1–5 ★ ratings)          │
-│    test.py   → Integration tests targeting the modified code paths  │
-│                (same PASS/FAIL format as regression.py)              │
-│                                                                      │
-│  Both files written to ConfigMap "ai-artifacts"                     │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │
-           ┌────────────────────▼─────────────────────────────────────┐
-           │  Job: ai-seed                                             │
-           │  Image: postgres:15                                       │
-           │  psql seed.sql → inserts products, categories, reviews   │
-           └────────────────────┬─────────────────────────────────────┘
-                                │
-           ┌────────────────────▼─────────────────────────────────────┐
-           │  Job: ai-tests                                            │
-           │  Image: python:3.11                                       │
-           │  pip install requests && python test.py                   │
-           │  APP_URL=http://svc-backend:8080                          │
-           └────────────────────┬─────────────────────────────────────┘
-                                │
-                    status.aiEnrichment.phase = Succeeded / Failed
-                    Results posted to PR comment
-                                │
-                                ▼
-                    Test suite unblocked (§6)
-```
-
-### Enable in CR
-
-```yaml
-spec:
-  aiEnrichment:
-    enabled: true
-    apiSecretRef:
-      name: ai-api-key
-      key: api-key
-    model: gpt-4o-mini       # optional, default gpt-4o-mini
-    seed:
-      enabled: true          # optional, default true
-    tests:
-      enabled: true          # optional, default true
-```
-
-### AI provider options
-
-| Provider | API URL | Secret |
-|----------|---------|--------|
-| OpenAI (default) | `https://api.openai.com/v1` | `sk-…` PAT |
-| GitHub Models (free) | `https://models.inference.ai.azure.com` | GitHub PAT |
-| Azure OpenAI | `https://<resource>.openai.azure.com/openai` | Azure API key |
-
-For any non-OpenAI provider, set `AI_API_URL`:
-
+Access Jaeger UI:
 ```bash
-kubectl set env deployment/preview-operator \
-  AI_API_URL=https://models.inference.ai.azure.com \
-  -n preview-operator-system
-```
-
-### Trigger an AI-only rerun
-
-Use this when you change the AI prompt, the operator image, or want fresh data without rerunning the full workflow:
-
-```bash
-# Via Copilot Extension
-@preview retest-ai pr-42
-
-# Via kubectl
-kubectl patch preview pr-42 --type=merge \
-  -p='{"spec":{"aiEnrichment":{"rerunRequested":true}}}'
-```
-
-The controller:
-1. Deletes the `ai-artifacts` ConfigMap
-2. Re-runs the 4-step AI pipeline (schema-dump → generate → seed → tests)
-3. Skips smoke / regression / E2E for this cycle
-4. Posts updated results to the PR
-
-### Per-environment prompt override
-
-```bash
-@preview set-prompt pr-42 "Generate products for a luxury watchmaker. Include Swiss brands, price range €500–€10000, at least 3 watch complications."
-@preview retest-ai pr-42
-```
-
-### AI test format
-
-The AI uses `tests/example_test.py` as a template — 18 integration tests covering the full API surface. Generated `test.py` files follow the same `PASS/FAIL` line format so the controller can parse results consistently.
-
----
-
-## 8. GitHub Integration
-
-The operator calls the GitHub API directly from its reconciliation loop — no external webhook, no polling service.
-
-### Phase → GitHub state mapping
-
-```
-┌──────────────────┬──────────────────────┬─────────────────────────────────────┐
-│ Preview phase   │ GitHub Deployment    │ PR comment                          │
-├──────────────────┼──────────────────────┼─────────────────────────────────────┤
-│ Pending          │ queued               │ —                                   │
-│ Provisioning     │ in_progress          │ 🔄 Provisioning en cours…           │
-│ Running          │ success + URL        │ ## Preview Preview Ready           │
-│                  │                      │ URL + DB evidence + test results    │
-│ Failed           │ failure              │ ## Preview Preview Failed          │
-│                  │                      │ diagnostics + pod logs              │
-│ Terminating      │ inactive             │ — (posted by cleanup.yaml)          │
-└──────────────────┴──────────────────────┴─────────────────────────────────────┘
-```
-
-### Idempotence
-
-Before every GitHub API call, the controller checks `status.github.deploymentState`, `lastNotifiedPhase`, and `commentId`. If the state was already written → zero API call, even across 100 reconcile loops. The PR comment is updated in-place (same `commentId`) rather than creating a new comment each time.
-
-```bash
-kubectl get preview pr-42 -o jsonpath='{.status.github}' | jq .
-kubectl get preview pr-42 -o jsonpath='{.status.github.lastError}'
-```
-
-### Accessing the preview
-
-```bash
-# Port-forward ingress (required for Kind)
-kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
-
-# Preview URL printed in the PR comment:
-http://pr-<NUMBER>.preview.localtest.me:8080
-
-# Jaeger traces
 kubectl port-forward -n observability svc/jaeger 16686:16686
-# Open http://localhost:16686 → service: idp-preview-pr-42
+# Open http://localhost:16686
 ```
 
-> **WSL2:** run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
+Service name: `idp-testing`
 
 ---
 
-## 9. Copilot Extension
+## 11. GitHub Integration
 
-Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl` needed.
+The operator posts three types of GitHub comments:
 
-### Available commands
+| Event | Comment |
+|-------|---------|
+| Preview ready | Environment URL + deployment status |
+| Tests complete | Full test suite results (smoke / contract / regression / e2e) |
+| Tests failed | kagent AI failure analysis |
 
-| Command | Description |
-|---|---|
-| `@preview list` | List all active environments |
-| `@preview status pr-42` | Phase, URL, DB state, TTL remaining |
-| `@preview logs pr-42` | Last 40 lines from the app pod |
-| `@preview extend pr-42 24h` | Extend TTL |
-| `@preview wake pr-42` | Restart a scaled-down environment |
-| `@preview reset-db pr-42` | Delete + re-run migration and seed |
-| `@preview run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview DB |
-| `@preview retest-ai pr-42` | Trigger AI-only rerun |
-| `@preview set-prompt pr-42 <text>` | Set custom AI instructions |
-| `@preview show-prompt pr-42` | Show current AI prompt |
-| `@preview help` | Show all commands |
-
-### `run-sql` examples
-
-```
-# Inspect
-@preview run-sql pr-42 SELECT COUNT(*) FROM products;
-@preview run-sql pr-42 SELECT p.name, AVG(r.rating) FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name;
-
-# Modify schema
-@preview run-sql pr-42 ALTER TABLE products ADD COLUMN featured BOOLEAN DEFAULT false;
-
-# Insert test data
-@preview run-sql pr-42 INSERT INTO products (name, price, stock) VALUES ('Test', 9.99, 10);
-
-# Reset
-@preview run-sql pr-42 TRUNCATE orders RESTART IDENTITY CASCADE;
-```
-
-### Deploy the extension
-
-```bash
-kubectl apply -f config/extension/rbac.yaml
-kubectl apply -f config/extension/deployment.yaml
-kubectl -n preview-operator-system rollout status deployment/preview-extension --timeout=60s
-
-# Expose for local Kind
-kubectl port-forward -n preview-operator-system svc/preview-extension 8090:8090 &
-ngrok http 8090
-# Copy the HTTPS URL → paste as webhook URL in your GitHub App settings
-```
+GitHub Deployment status is updated to `success` once the environment is ready.
 
 ---
 
-## 10. Application Reference
+## 12. Application Reference
 
-### Services
+The demo app (`idp-testing`) exposes:
 
-| Service | File | Port | Ingress path | Role |
-|---------|------|------|--------------|------|
-| `backend` | `app.py` | `8080` | `/api` | REST API + DB init |
-| `frontend` | `frontend.py` | `3000` | `/` | SPA + `/api` proxy to backend |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/healthz` | Health check |
+| GET | `/api/products` | List products |
+| POST | `/api/products` | Create product |
+| GET | `/api/products/{id}` | Get product detail |
+| DELETE | `/api/products/{id}` | Delete product |
+| GET | `/api/products/discounted` | Products with discount ≥ min_discount |
+| GET | `/api/products/{id}/related` | Related products (same category) |
+| GET | `/api/products/{id}/reviews` | List reviews |
+| POST | `/api/products/{id}/reviews` | Create review |
+| POST | `/api/orders` | Create order |
+| GET | `/api/orders` | List orders |
+| GET | `/api/categories` | List categories |
+| POST | `/api/categories` | Create category |
+| GET | `/api/stats` | Catalog statistics |
 
-Both built from the **same Docker image**. The entrypoint is selected via `APP_MODE`:
-
-```bash
-docker run -e DATABASE_URL=... image              # → app.py (backend)
-docker run -e APP_MODE=frontend -e ... image      # → frontend.py (frontend)
-```
-
-The frontend proxies `/api/*` requests to the backend via a Flask route — so `fetch('/api/products')` in the browser works correctly inside the cluster without touching the ingress.
-
-### Database schema
-
-```sql
-categories (id SERIAL, name TEXT, slug TEXT)
-products   (id SERIAL, name TEXT, description TEXT, category_id INT,
-            price NUMERIC, stock INT, discount_pct NUMERIC, created_at TIMESTAMP)
-reviews    (id SERIAL, product_id INT, author TEXT, rating INT CHECK(1..5),
-            comment TEXT, created_at TIMESTAMP)
-orders     (id SERIAL, product_id INT, quantity INT, status TEXT, created_at TIMESTAMP)
-```
-
-The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — restarts are safe.
-
-### Backend REST API (`app.py`)
-
-| Route | Method | Returns |
-|-------|--------|---------|
-| `/healthz` | GET | `ok` |
-| `/api/products` | GET | last 50 products with ratings |
-| `/api/products` | POST | create product → 201 |
-| `/api/products/<id>` | GET | product + reviews → 200 / 404 |
-| `/api/products/<id>` | DELETE | 204 / 404 |
-| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` |
-| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` |
-| `/api/products/<id>/reviews` | GET/POST | reviews |
-| `/api/categories` | GET/POST | categories |
-| `/api/orders` | GET/POST | orders (409 if insufficient stock) |
-| `/api/stats` | GET | totals, avg rating, out-of-stock |
-| `/api/seeded-data` | GET | full DB dump for AI enrichment UI |
-
-### Frontend features (`frontend.py`)
-
-| Feature | `data-testid` attribute | Used by |
-|---------|------------------------|---------|
-| Product grid | `product-grid` | E2E |
-| Product card | `product-card` | E2E |
-| Discount badge | `product-discount` | E2E |
-| Detail side panel | `product-detail` | E2E |
-| Detail name | `detail-name` | E2E |
-| Detail price | `detail-price` | E2E |
-| Related products section | `related-section` | E2E |
-| Close button | `close-detail` | E2E |
-| Overlay background | `detail-overlay` | E2E |
-| Discount filter input | `discount-input` | E2E |
-| Discount filter apply | `discount-apply` | E2E |
-| Preview badge | `preview-badge` | E2E |
-
-### File map
-
-| File | Role |
-|------|------|
-| `app.py` | Backend — REST API, DB init |
-| `frontend.py` | Frontend — SPA, `/api` proxy |
-| `Dockerfile` | Single image, `APP_MODE=frontend` switches entrypoint |
-| `tests/regression.py` | 9 endpoint regression tests |
-| `tests/e2e.py` | 6 Playwright E2E tests |
-| `tests/example_test.py` | 18-test template used by AI to generate `test.py` |
-| `.github/workflows/preview.yaml` | CI: build → deploy Preview CR |
-| `.github/workflows/cleanup.yaml` | CI: delete Preview CR on PR close |
+Full contract: [`api/openapi.yaml`](api/openapi.yaml)
 
 ---
 
-## 11. Troubleshooting
-
-### Runner token expired
-
-Symptom: runner pod is running but shows `Listening for Jobs` then reconnects every few minutes, or jobs never start.
-
-```bash
-NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
-kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
-kubectl rollout restart deployment/github-runner -n github-runner
-kubectl logs -n github-runner deployment/github-runner --tail=5
-# Expected: "Listening for Jobs"
-```
-
-### Kaniko job hangs on image push
-
-Symptom: workflow times out at `kubectl wait job/kaniko-…`, pod logs show only `Pushing image to ghcr.io/…`.
-
-Cause: `PREVIEW_GITHUB_TOKEN` secret missing or lacks `write:packages`.
-
-```bash
-gh secret set PREVIEW_GITHUB_TOKEN --repo <OWNER>/<REPO> --body "<PAT>"
-git commit --allow-empty -m "ci: retrigger" && git push
-```
-
-### Infinite reconcile loop every 2 seconds
-
-Cause: the CRD schema is missing a field that the controller writes to `status` — the API server silently strips it on every write, so the field never persists, causing the controller to keep trying.
-
-Fix: always apply the CRD **before** helm upgrade.
-
-```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
-  | tail -n +3 | kubectl apply -f -
-helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 0.13.8 --namespace preview-operator-system
-```
+## 13. Troubleshooting
 
 ### Preview stuck in Provisioning
 
 ```bash
 kubectl describe preview pr-<N>
-kubectl get events -n preview-pr-<N> --sort-by='.lastTimestamp'
+kubectl get events -n preview-pr-<N> --sort-by=.lastTimestamp
 ```
 
-### Preview Failed — x509 webhook error
-
-Symptom: `failed calling webhook "validate.nginx.ingress.kubernetes.io": x509: certificate signed by unknown authority`
+### Test job failed
 
 ```bash
-kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
-helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --set controller.admissionWebhooks.enabled=false --wait
-kubectl delete preview pr-<N> --ignore-not-found
-git commit --allow-empty -m "ci: retrigger" && git push
+kubectl get jobs -n preview-pr-<N>
+kubectl logs job/smoke-tests -n preview-pr-<N>
+kubectl logs job/microcks-contract-tests -n preview-pr-<N>
+kubectl logs job/regression-tests -n preview-pr-<N>
+kubectl logs job/e2e-tests -n preview-pr-<N>
 ```
 
-### Preview Failed — read diagnostics
+### kagent not posting analysis
 
 ```bash
-kubectl get preview pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
-# .podLogs      → last 30 lines of the crashed app container
-# .lastEvents   → recent Warning events from the namespace
-# .debugCommands → kubectl commands for further investigation
+# Check agent is reachable
+kubectl get pod -n kagent-system -l app.kubernetes.io/name=preview-troubleshooter-agent
+
+# Check API key has no trailing whitespace
+kubectl get secret kagent-openai -n kagent-system -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d | cat -A
+
+# Recreate secret if needed (strip whitespace)
+KEY=$(kubectl get secret kagent-openai -n kagent-system -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d | tr -d '\r\n')
+kubectl create secret generic kagent-openai -n kagent-system --from-literal=OPENAI_API_KEY="$KEY" --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/preview-troubleshooter-agent -n kagent-system
 ```
 
-### No traces in Jaeger
+### Microcks 0 tests
+
+The workflow imports the OpenAPI spec at the start of each run. If the import fails:
 
 ```bash
-kubectl get pod -n preview-pr-<N> -l app=preview-preview \
-  -o jsonpath='{.items[0].metadata.annotations}' | grep instrumentation
-# Expected: "instrumentation.opentelemetry.io/inject-python": "observability/python"
+# Check Microcks has the API registered
+curl -s http://microcks.<ip>.nip.io/api/services | jq '.[] | .name'
+
+# Re-run the import manually
+kubectl run microcks-import --namespace=microcks --image=python:3.11-slim \
+  --restart=Never --rm -i --command -- python3 << 'EOF'
+# ... (see workflow step)
+EOF
 ```
 
-### Helm chart version not found
+### Operator logs
 
 ```bash
-helm repo update
-# Then omit --version to use the latest available release
+kubectl logs -n preview-operator-system deployment/preview-operator --tail=100
 ```
-
----
-
-## Installed components
-
-| Component | Namespace | Version | Notes |
-|-----------|-----------|---------|-------|
-| cert-manager | `cert-manager` | v1.20.2 | |
-| ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
-| Preview Operator | `preview-operator-system` | **0.13.8** | Multi-service, sequential test pipeline, AI enrichment, checkpoint restore |
-| OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
-| Jaeger (all-in-one) | `observability` | 1.67.0 | |
-| OTel Collector + Instrumentation | `observability` | 0.149.0 | |
-| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
-| Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
-| kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
-
----
-
-## 12. Contract testing and AI-powered failure analysis
-
-> **Platform narrative:**
-> "Every pull request gets an isolated Kubernetes preview environment,
-> AI-generated test data, API contract validation with Microcks, automated
-> regression/E2E tests, and kagent-powered failure explanation posted directly
-> as a GitHub PR comment."
-
-### Stack versions
-
-| Component | Version | Role |
-|-----------|---------|------|
-| preview-operator | 1.0.1 | Provisions and orchestrates preview environments |
-| idp-preview (this app) | 1.0.1 | Sample Flask REST API + frontend |
-| Microcks | 1.14.0 | OpenAPI contract testing |
-| kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
-| CRD | `previews.platform.company.io/v1alpha1` | Preview CR |
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Developer — git push + gh pr create                                │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │ pull_request: opened / synchronize
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  GitHub Actions (.github/workflows/preview.yaml)                    │
-│  Kaniko build → push image → apply Preview CR                      │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.1                                             │
-│                                                                     │
-│  Namespace preview-pr-<N>                                          │
-│   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
-│   ├── AI enrichment: schema-dump → generate → seed → ai-tests     │
-│   ├── Test suite:  smoke → contract (Microcks) → regression → E2E  │
-│   └── Microcks contract test  ◄───────────────────────────────┐   │
-└──────────────────────────┬──────────────────────────────────────│───┘
-                           │                                       │
-         ┌─────────────────┼───────────────────────┐             │
-         │ PASS            │ FAIL                  │             │
-         ▼                 ▼                       │             │
-  PR comment ✅    kagent triggered 🤖            │             │
-                    │                              │             │
-                    ▼                              │             │
-         ┌──────────────────────────┐             │             │
-         │  preview-troubleshooter  │             │             │
-         │  -agent (read-only)      │             │             │
-         │                          │             │             │
-         │  Inspects:               │      ┌──────┘             │
-         │  - Preview CR status     │      │  Microcks          │
-         │  - Pod/job logs          │◄─────│  (in-cluster)      │
-         │  - Microcks job output   │      │  OPEN_API_SCHEMA   │
-         │  - Events                │      │  runner            │
-         └──────────┬───────────────┘      └────────────────────┘
-                    │
-                    ▼
-         Structured PR comment:
-         Risk level / Evidence /
-         Root cause / Suggested fix /
-         Reproduction commands
-```
-
-### What Microcks adds
-
-[Microcks](https://microcks.io) is an open-source API mocking and testing
-platform. In the Preview Platform it runs **OPEN_API_SCHEMA** validation:
-it sends real HTTP requests to the live backend (`svc-backend:8080`) and
-validates every response against `api/openapi.yaml`.
-
-- **Contract = single source of truth.** The OpenAPI file in the repo
-  defines what the API must return. Microcks enforces it on every PR.
-- **Catches schema drift early.** A field rename, wrong HTTP status code,
-  or missing required field is caught before code review — not by a
-  downstream consumer in production.
-- **Zero infrastructure for the developer.** Microcks runs in-cluster;
-  the Job is created and cleaned up automatically by the operator.
-
-### What kagent adds
-
-[kagent](https://kagent.dev) is a Kubernetes AI agent framework. The
-`preview-troubleshooter-agent` is a **read-only** agent that:
-
-- Is triggered automatically when any test suite (Microcks, regression, E2E) fails.
-- Reads Kubernetes resources, job logs, and events using a Kubernetes MCP
-  server — **no kubectl exec, no secret access, no mutations.**
-- Produces a structured Markdown GitHub PR comment with:
-  - Risk level (HIGH / MEDIUM / LOW / INFO)
-  - Evidence collected from the cluster
-  - Likely root cause
-  - Suggested fix with file and line references
-  - kubectl commands to reproduce the failure
-
-### Why kagent complements but does not replace the Preview Operator
-
-| Concern | Preview Operator | kagent |
-|---------|-----------------|--------|
-| Provision environments | ✅ | ❌ |
-| Run test pipelines | ✅ | ❌ |
-| Manage lifecycle (TTL, teardown) | ✅ | ❌ |
-| Diagnose failures | ❌ | ✅ |
-| Explain root cause in plain language | ❌ | ✅ |
-| Suggest code fixes | ❌ | ✅ |
-| Mutate cluster resources | ✅ (controlled) | ❌ (by design) |
-
-### How it fits the existing pipeline
-
-```
-Existing pipeline                       New additions
-─────────────────                       ──────────────
-1. AI enrichment (seed + tests)
-2. smoke-tests
-3. [NEW] microcks-contract-tests  ←── api/openapi.yaml validated
-4. suite-restore-regression
-5. regression-tests
-6. suite-restore-e2e
-7. e2e-tests
-
-On any failure → kagent ←─────────────── preview-troubleshooter-agent
-                                          reads logs from all above steps
-```
-
-### Manual commands
-
-```bash
-# Validate OpenAPI spec locally
-pip install pyyaml
-make validate-openapi
-
-# Validate all YAML files
-make validate-yaml
-
-# Run Microcks contract test manually
-export MICROCKS_URL=http://localhost:8080
-export BACKEND_URL=http://localhost:8080
-make microcks-contract-test
-
-# Apply kagent resources
-kubectl apply -f k8s/kagent/namespace.yaml
-kubectl apply -f k8s/kagent/rbac-readonly.yaml
-kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
-```
-
-### Required secrets
-
-| Secret | Namespace | Keys | Purpose |
-|--------|-----------|------|---------|
-| `microcks-credentials` | `preview-pr-<N>` | `client_id`, `client_secret` | Microcks OAuth2 (optional) |
-| `azure-openai-credentials` | `kagent-system` | `api-key` | Model provider for kagent |
-
-### Limitations
-
-| Limitation | Detail |
-|------------|--------|
-| Microcks must be pre-installed | Not installed by the operator chart — deploy separately |
-| OpenAPI spec must be imported in Microcks | Upload `api/openapi.yaml` once before first use |
-| kagent is read-only | Diagnosis only — cannot auto-fix failures |
-| kagent requires a model provider | Azure OpenAI, OpenAI, or any OpenAI-compatible API |
-# AKS pipeline test - Sat May  9 15:11:58 CEST 2026
