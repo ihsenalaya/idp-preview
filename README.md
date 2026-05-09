@@ -1429,7 +1429,7 @@ helm repo update
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **1.0.12** | Copilot commands + checkpoint API |
+| Preview Extension | `preview-operator-system` | **1.0.21** | Copilot commands + checkpoint API |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
 | kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
 
