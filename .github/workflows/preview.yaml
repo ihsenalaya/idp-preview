@@ -14,7 +14,7 @@ env:
 jobs:
   deploy:
     name: Build & Deploy Preview
-    runs-on: [self-hosted, aks]
+    runs-on: [self-hosted, test1]
     permissions:
       contents: read
       packages: write
