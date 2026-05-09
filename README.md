@@ -151,13 +151,37 @@ helm repo add microcks       https://microcks.io/helm
 helm repo update
 ```
 
-### Step 1 — Create the Kind cluster
+### Step 1 — Create the AKS cluster
 
 ```bash
-kind create cluster --name testing
+# Créer le resource group et le cluster AKS (ajuster --location si besoin)
+az group create --name <YOUR_RG> --location francecentral
+
+az aks create \
+  --resource-group <YOUR_RG> \
+  --name <YOUR_CLUSTER> \
+  --node-count 2 \
+  --node-vm-size Standard_D4s_v3 \
+  --generate-ssh-keys
+
+# Récupérer les credentials
+az aks get-credentials --resource-group <YOUR_RG> --name <YOUR_CLUSTER>
+```
+
+> **WSL/Windows :** `az aks get-credentials` écrit dans `C:\Users\<USER>\.kube\config`, pas dans `~/.kube/config`.
+> Fusionner manuellement vers WSL :
+> ```bash
+> KUBECONFIG=/mnt/c/Users/<USER>/.kube/config \
+>   kubectl config view --minify --context <YOUR_CLUSTER> --raw \
+>   > ~/.kube/<YOUR_CLUSTER>.yaml
+> export KUBECONFIG=~/.kube/<YOUR_CLUSTER>.yaml
+> # Ajouter à ~/.bashrc pour persistance
+> ```
+
+```bash
 kubectl get nodes
-# NAME                    STATUS   ROLES           AGE   VERSION
-# testing-control-plane   Ready    control-plane   …     v1.35.0
+# NAME                                STATUS   ROLES   AGE   VERSION
+# aks-nodepool1-XXXXXXXX-vmss000000   Ready    agent   …     v1.32.x
 ```
 
 ### Step 2 — Install cert-manager
@@ -196,8 +220,11 @@ Istio provides public URLs without port-forwarding via a shared wildcard DNS ent
 
 ```bash
 # Download istioctl
+# ⚠️  /usr/local/bin nécessite sudo sur WSL — utiliser ~/bin à la place
+mkdir -p ~/bin
 curl -sL "https://github.com/istio/istio/releases/download/1.23.0/istioctl-1.23.0-linux-amd64.tar.gz" \
-  | tar -xz -C /usr/local/bin
+  | tar -xz -C ~/bin
+export PATH="$HOME/bin:$PATH"   # ajouter à ~/.bashrc pour persistance
 
 # Install Istio with ingress gateway
 istioctl install --set profile=minimal \
@@ -205,10 +232,13 @@ istioctl install --set profile=minimal \
   --set components.ingressGateways[0].name=istio-ingressgateway \
   -y
 
-# Get the gateway external IP (wait until assigned)
-kubectl get svc istio-ingressgateway -n istio-system
+# Attendre l'attribution de l'IP externe (AKS peut prendre 2-3 min)
+kubectl get svc istio-ingressgateway -n istio-system --watch
+# Arrêter quand EXTERNAL-IP n'est plus <pending>
+
 ISTIO_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Istio IP: $ISTIO_IP"   # vérifier que la valeur n'est pas vide
 
 # Create wildcard DNS record in Azure DNS
 az network dns record-set a add-record \
@@ -242,68 +272,73 @@ Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4
 
 ### Step 4 — Install the Preview Operator
 
-Build the operator image and load it into Kind, then install with Helm from the local chart.
+Sur AKS, l'image est tirée depuis GHCR — pas besoin de `docker build` ni de `kind load`.
 
 ```bash
-# Build the operator image
-cd preview-operator
-docker build -t ghcr.io/ihsenalaya/preview-operator:1.0.21 .
-kind load docker-image ghcr.io/ihsenalaya/preview-operator:1.0.21
+# Récupérer le chart depuis GHCR (version publiée)
+helm install preview-operator oci://ghcr.io/ihsenalaya/preview-operator/helm/preview-operator \
+  --version 1.0.21 \
+  --namespace preview-operator-system \
+  --create-namespace \
+  --set image.tag=1.0.21 \
+  --set previewDomain=preview.<YOUR_ZONE>
 
-# Apply the CRD manually (Helm does not update CRDs on upgrade)
+# OU depuis le chart local (si vous avez cloné le repo preview-operator)
+# Appliquer d'abord le CRD (Helm ne met pas à jour les CRDs sur helm upgrade)
 kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 
-# Install the Helm chart
 helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.tag=1.0.21 \
-  --set previewDomain=preview.ihsenalaya.xyz \
-  --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
+  --set previewDomain=preview.<YOUR_ZONE>
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 kubectl get crd previews.platform.company.io
 ```
 
+> **`ai.apiURL` :** ne pas mettre l'URL complète du déploiement — mettre uniquement l'endpoint de base.
+> L'opérateur ajoute lui-même `/openai/deployments/<model>/chat/completions`.
+> L'URL correcte est définie via la variable d'environnement `AI_API_URL` (voir Step 7.5).
+
 #### Upgrading the operator
 
 ```bash
-# Rebuild and reload image
-docker build -t ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION> .
-kind load docker-image ghcr.io/ihsenalaya/preview-operator:<NEW_VERSION>
-
-# Apply updated CRD
+# Appliquer le CRD mis à jour (Helm ne met pas à jour les CRDs automatiquement)
 kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 
-# Upgrade the Helm release
-helm upgrade preview-operator ./charts/preview-operator \
+helm upgrade preview-operator oci://ghcr.io/ihsenalaya/preview-operator/helm/preview-operator \
+  --version <NEW_VERSION> \
   --namespace preview-operator-system \
-  --set image.tag=<NEW_VERSION> \
-  --reuse-values
+  --reuse-values \
+  --set image.tag=<NEW_VERSION>
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 ```
 
 ### Step 4b — Install Microcks
 
-Microcks provides in-cluster OpenAPI contract testing. Get the Kind node IP first:
+Microcks provides in-cluster OpenAPI contract testing.
 
 ```bash
-NODE_IP=$(kubectl get nodes -o wide | grep control-plane | awk '{print $6}')
-# e.g. 172.18.0.2
-
+# Sur AKS — utiliser l'IP du LoadBalancer Istio ou un NodePort
+# L'opérateur communique avec Microcks en intra-cluster : pas d'ingress requis
 helm install microcks microcks/microcks \
   --namespace microcks \
   --create-namespace \
-  --set "microcks.url=microcks.${NODE_IP}.nip.io" \
-  --set "microcks.ingressClassName=nginx" \
+  --set "microcks.url=microcks.microcks.svc.cluster.local" \
   --set "microcks.generateCert=false" \
-  --set "keycloak.url=keycloak.${NODE_IP}.nip.io" \
-  --set "keycloak.ingressClassName=nginx" \
+  --set "keycloak.url=keycloak.microcks.svc.cluster.local" \
   --set "keycloak.generateCert=false"
 
 kubectl -n microcks rollout status deployment/microcks --timeout=180s
 ```
+
+> **Importer le contrat OpenAPI avant le premier test.** Sans import, Microcks renvoie `HTTP 500`
+> sur `/api/tests` même si la spec est accessible via `specURL`.
+> Le manifest preview déclenche l'import automatiquement via un Job `microcks-import` —
+> mais seulement si `spec.testSuite.contractTesting.specURL` est accessible depuis le cluster
+> (URL publique, pas `localhost`).
 
 The operator creates test jobs that call Microcks at `http://microcks.microcks.svc.cluster.local:8080` — no ingress needed for in-cluster communication.
 
@@ -439,6 +474,20 @@ kubectl get instrumentation -n observability
 
 The runner uses a **long-lived GitHub PAT** (`ACCESS_TOKEN`) rather than a one-time registration token. The `myoung34/github-runner` image automatically exchanges the PAT for a fresh registration token on every pod start — no manual renewal needed.
 
+> **Clusters multiples :** chaque cluster doit avoir un nom de runner et des labels distincts
+> pour éviter que GitHub envoie les jobs au mauvais cluster.
+> Modifier `RUNNER_NAME` et `LABELS` dans `runner.yaml` avant d'appliquer :
+> ```yaml
+> - name: RUNNER_NAME
+>   value: aks-runner-<ENV>        # ex: aks-runner-prod, aks-runner-test1
+> - name: LABELS
+>   value: self-hosted,aks,<ENV>   # ex: self-hosted,aks,test1
+> ```
+> Et adapter `runs-on` dans le workflow : `runs-on: [self-hosted, aks, <ENV>]`
+
+> **Token type :** utiliser un PAT (`ghp_...` ou `github_pat_...`) — les tokens OAuth (`gho_...`)
+> ne fonctionnent pas pour l'enregistrement du runner et échouent avec "Token is not valid".
+
 #### 7.1 Create the runner PAT secret
 
 The PAT must have `repo` scope (for registration) and `write:packages` (for Kaniko to push to GHCR).
@@ -514,13 +563,23 @@ kubectl create secret generic preview-github-token \
 **Azure OpenAI (used in this setup)**
 
 ```bash
+# ⚠️  WSL/Windows : toujours utiliser tr -d '\r\n' sur les sorties az CLI
 AOAI_KEY=$(az cognitiveservices account keys list \
   --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "key1" -o tsv)
+  --query "key1" -o tsv | tr -d '\r\n')
 
 kubectl create secret generic ai-api-key \
   --namespace preview-operator-system \
   --from-literal=api-key="$AOAI_KEY"
+
+# Configurer l'URL de base Azure OpenAI (endpoint sans le path /deployments/...)
+AOAI_ENDPOINT=$(az cognitiveservices account show \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "properties.endpoint" -o tsv | tr -d '\r\n')
+
+kubectl set env deployment/preview-operator \
+  AI_API_URL="$AOAI_ENDPOINT" \
+  -n preview-operator-system
 ```
 
 **OpenAI**
