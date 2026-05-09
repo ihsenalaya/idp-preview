@@ -151,12 +151,13 @@ helm repo add microcks       https://microcks.io/helm
 helm repo update
 ```
 
-### Step 1 — Create the AKS cluster
+### Step 1 — Create the cluster
+
+#### Option A — AKS (production / recommended)
 
 ```bash
-# Créer le resource group et le cluster AKS (ajuster --location si besoin)
-az group create --name <YOUR_RG> --location francecentral
-
+# Create the AKS cluster
+az group create --name <YOUR_RG> --location westeurope
 az aks create \
   --resource-group <YOUR_RG> \
   --name <YOUR_CLUSTER> \
@@ -164,24 +165,25 @@ az aks create \
   --node-vm-size Standard_D4s_v3 \
   --generate-ssh-keys
 
-# Récupérer les credentials
-az aks get-credentials --resource-group <YOUR_RG> --name <YOUR_CLUSTER>
+# Merge credentials into WSL kubeconfig
+# (az CLI on WSL/Windows returns paths with \r\n — the pipeline below handles it)
+az aks get-credentials \
+  --resource-group <YOUR_RG> \
+  --name <YOUR_CLUSTER> \
+  --file - \
+  | KUBECONFIG="$HOME/.kube/config":/dev/stdin kubectl config view --merge --flatten \
+  > /tmp/merged-kube && mv /tmp/merged-kube "$HOME/.kube/config"
+
+kubectl get nodes
 ```
 
-> **WSL/Windows :** `az aks get-credentials` écrit dans `C:\Users\<USER>\.kube\config`, pas dans `~/.kube/config`.
-> Fusionner manuellement vers WSL :
-> ```bash
-> KUBECONFIG=/mnt/c/Users/<USER>/.kube/config \
->   kubectl config view --minify --context <YOUR_CLUSTER> --raw \
->   > ~/.kube/<YOUR_CLUSTER>.yaml
-> export KUBECONFIG=~/.kube/<YOUR_CLUSTER>.yaml
-> # Ajouter à ~/.bashrc pour persistance
-> ```
+> **WSL note:** never use `az aks get-credentials --file ~/.kube/config` directly on WSL — it writes a Windows-style path that kubectl cannot read. Use the pipeline above.
+
+#### Option B — Kind (local dev only)
 
 ```bash
+kind create cluster --name testing
 kubectl get nodes
-# NAME                                STATUS   ROLES   AGE   VERSION
-# aks-nodepool1-XXXXXXXX-vmss000000   Ready    agent   …     v1.32.x
 ```
 
 ### Step 2 — Install cert-manager
@@ -220,11 +222,8 @@ Istio provides public URLs without port-forwarding via a shared wildcard DNS ent
 
 ```bash
 # Download istioctl
-# ⚠️  /usr/local/bin nécessite sudo sur WSL — utiliser ~/bin à la place
-mkdir -p ~/bin
 curl -sL "https://github.com/istio/istio/releases/download/1.23.0/istioctl-1.23.0-linux-amd64.tar.gz" \
-  | tar -xz -C ~/bin
-export PATH="$HOME/bin:$PATH"   # ajouter à ~/.bashrc pour persistance
+  | tar -xz -C /usr/local/bin
 
 # Install Istio with ingress gateway
 istioctl install --set profile=minimal \
@@ -232,13 +231,10 @@ istioctl install --set profile=minimal \
   --set components.ingressGateways[0].name=istio-ingressgateway \
   -y
 
-# Attendre l'attribution de l'IP externe (AKS peut prendre 2-3 min)
-kubectl get svc istio-ingressgateway -n istio-system --watch
-# Arrêter quand EXTERNAL-IP n'est plus <pending>
-
+# Get the gateway external IP (wait until assigned)
+kubectl get svc istio-ingressgateway -n istio-system
 ISTIO_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "Istio IP: $ISTIO_IP"   # vérifier que la valeur n'est pas vide
 
 # Create wildcard DNS record in Azure DNS
 az network dns record-set a add-record \
@@ -272,46 +268,55 @@ Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4
 
 ### Step 4 — Install the Preview Operator
 
-Sur AKS, l'image est tirée depuis GHCR — pas besoin de `docker build` ni de `kind load`.
+#### AKS / Production — use the pre-built GHCR image
 
 ```bash
-# Récupérer le chart depuis GHCR (version publiée)
-helm install preview-operator oci://ghcr.io/ihsenalaya/preview-operator/helm/preview-operator \
-  --version 1.0.21 \
-  --namespace preview-operator-system \
-  --create-namespace \
-  --set image.tag=1.0.21 \
-  --set previewDomain=preview.<YOUR_ZONE>
-
-# OU depuis le chart local (si vous avez cloné le repo preview-operator)
-# Appliquer d'abord le CRD (Helm ne met pas à jour les CRDs sur helm upgrade)
+# Apply the CRD (Helm does not update CRDs on upgrade)
 kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
+
+AOAI_ENDPOINT=$(az cognitiveservices account show \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "properties.endpoint" -o tsv | tr -d '\r\n')
 
 helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
+  --set image.repository=ghcr.io/ihsenalaya/preview-operator \
   --set image.tag=1.0.21 \
-  --set previewDomain=preview.<YOUR_ZONE>
+  --set previewDomain=preview.ihsenalaya.xyz \
+  --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 kubectl get crd previews.platform.company.io
 ```
 
-> **`ai.apiURL` :** ne pas mettre l'URL complète du déploiement — mettre uniquement l'endpoint de base.
-> L'opérateur ajoute lui-même `/openai/deployments/<model>/chat/completions`.
-> L'URL correcte est définie via la variable d'environnement `AI_API_URL` (voir Step 7.5).
-
-#### Upgrading the operator
+#### Kind (local dev) — build and load the image locally
 
 ```bash
-# Appliquer le CRD mis à jour (Helm ne met pas à jour les CRDs automatiquement)
+cd preview-operator
+docker build -t ghcr.io/ihsenalaya/preview-operator:latest .
+kind load docker-image ghcr.io/ihsenalaya/preview-operator:latest
+
 kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 
-helm upgrade preview-operator oci://ghcr.io/ihsenalaya/preview-operator/helm/preview-operator \
-  --version <NEW_VERSION> \
+helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
-  --reuse-values \
-  --set image.tag=<NEW_VERSION>
+  --create-namespace \
+  --set image.tag=latest \
+  --set previewDomain=preview.ihsenalaya.xyz
+
+kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
+```
+
+#### Upgrading the operator (AKS)
+
+```bash
+kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
+
+helm upgrade preview-operator ./charts/preview-operator \
+  --namespace preview-operator-system \
+  --set image.tag=<NEW_VERSION> \
+  --reuse-values
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 ```
@@ -320,25 +325,30 @@ kubectl -n preview-operator-system rollout status deployment/preview-operator --
 
 Microcks provides in-cluster OpenAPI contract testing.
 
+**AKS** — use the Istio ingress gateway IP:
+
 ```bash
-# Sur AKS — utiliser l'IP du LoadBalancer Istio ou un NodePort
-# L'opérateur communique avec Microcks en intra-cluster : pas d'ingress requis
+# Wait until the external IP is assigned (may take 1-2 minutes)
+until kubectl get svc istio-ingressgateway -n istio-system \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' | grep -qE '[0-9]'; do
+  sleep 5; echo -n "."; done
+ISTIO_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "IP: $ISTIO_IP"
+
 helm install microcks microcks/microcks \
   --namespace microcks \
   --create-namespace \
-  --set "microcks.url=microcks.microcks.svc.cluster.local" \
+  --set "microcks.url=microcks.${ISTIO_IP}.nip.io" \
+  --set "microcks.ingressClassName=nginx" \
   --set "microcks.generateCert=false" \
-  --set "keycloak.url=keycloak.microcks.svc.cluster.local" \
+  --set "keycloak.url=keycloak.${ISTIO_IP}.nip.io" \
+  --set "keycloak.privateUrl=http://microcks-keycloak.microcks.svc.cluster.local:8080" \
+  --set "keycloak.ingressClassName=nginx" \
   --set "keycloak.generateCert=false"
 
 kubectl -n microcks rollout status deployment/microcks --timeout=180s
 ```
-
-> **Importer le contrat OpenAPI avant le premier test.** Sans import, Microcks renvoie `HTTP 500`
-> sur `/api/tests` même si la spec est accessible via `specURL`.
-> Le manifest preview déclenche l'import automatiquement via un Job `microcks-import` —
-> mais seulement si `spec.testSuite.contractTesting.specURL` est accessible depuis le cluster
-> (URL publique, pas `localhost`).
 
 The operator creates test jobs that call Microcks at `http://microcks.microcks.svc.cluster.local:8080` — no ingress needed for in-cluster communication.
 
@@ -379,14 +389,10 @@ az cognitiveservices account deployment create \
   --sku-name "GlobalStandard" \
   --sku-capacity 30
 
-# ⚠️  WSL/Windows : az CLI ajoute un \r en fin de valeur — toujours utiliser tr -d '\r\n'
+# On WSL/Windows, az CLI returns values with \r\n — strip it explicitly
 AOAI_KEY=$(az cognitiveservices account keys list \
   --name "preview-openai" --resource-group "<YOUR_RG>" \
   --query "key1" -o tsv | tr -d '\r\n')
-
-AOAI_ENDPOINT=$(az cognitiveservices account show \
-  --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "properties.endpoint" -o tsv | tr -d '\r\n')
 
 # Secret for kagent agents
 kubectl create secret generic kagent-openai \
@@ -397,52 +403,53 @@ kubectl create secret generic kagent-openai \
 kubectl create secret generic azure-openai-credentials \
   --namespace preview-operator-system \
   --from-literal=api-key="$AOAI_KEY"
-
-# Pull secret for private GHCR images (jaeger-mcp-server)
-GH_TOKEN=$(cat ~/.config/gh/hosts.yml | grep oauth_token | awk '{print $2}')
-kubectl create secret docker-registry ghcr-pull-secret \
-  --namespace kagent-system \
-  --docker-server=ghcr.io \
-  --docker-username="<YOUR_GITHUB_USERNAME>" \
-  --docker-password="$GH_TOKEN"
 ```
 
 #### Configure kagent ModelConfig for Azure OpenAI
 
 ```bash
-# Récupérer l'endpoint exact depuis Azure (ne pas deviner le suffixe -<ID>)
-AOAI_ENDPOINT=$(az cognitiveservices account show \
-  --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "properties.endpoint" -o tsv | tr -d '\r\n')
-
-kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p "{
-  \"spec\": {
-    \"provider\": \"AzureOpenAI\",
-    \"model\": \"gpt-4o-mini\",
-    \"apiKeySecret\": \"kagent-openai\",
-    \"apiKeySecretKey\": \"OPENAI_API_KEY\",
-    \"azureOpenAI\": {
-      \"azureEndpoint\": \"$AOAI_ENDPOINT\",
-      \"azureDeployment\": \"gpt-4o-mini\",
-      \"apiVersion\": \"2024-10-21\"
+kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p '{
+  "spec": {
+    "provider": "AzureOpenAI",
+    "model": "gpt-4o-mini",
+    "apiKeySecret": "kagent-openai",
+    "apiKeySecretKey": "OPENAI_API_KEY",
+    "azureOpenAI": {
+      "azureEndpoint": "https://preview-openai-<ID>.openai.azure.com",
+      "azureDeployment": "gpt-4o-mini",
+      "apiVersion": "2024-10-21"
     }
   }
-}"
+}'
 ```
 
 #### Deploy the preview troubleshooter agent
 
+The agent uses a private GHCR image (`jaeger-mcp-server`). Create the pull secret first.
+
 ```bash
+# Pull secret for the jaeger-mcp-server image (private GHCR)
+GH_TOKEN=$(cat ~/.config/gh/hosts.yml | grep oauth_token | awk '{print $2}' | tr -d '\r\n')
+kubectl create secret docker-registry ghcr-pull-secret \
+  --namespace kagent-system \
+  --docker-server=ghcr.io \
+  --docker-username=ihsenalaya \
+  --docker-password="$GH_TOKEN"
+
+# Deploy RBAC, MCP server, and agent
 kubectl apply -f k8s/kagent/rbac-readonly.yaml
 kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
+kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
 kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
 
-# Attendre que jaeger-mcp-server soit Running avant de vérifier l'agent
-kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
-
-# L'agent doit être READY=True ACCEPTED=True — si ACCEPTED=False, jaeger-mcp-server n'est pas encore prêt
+# Verify — ACCEPTED must be True before the operator can call the agent
 kubectl get agent preview-troubleshooter-agent -n kagent-system
+# Expected: READY=True  ACCEPTED=True
 ```
+
+> **If ACCEPTED=False** : check `kubectl describe agent preview-troubleshooter-agent -n kagent-system`.
+> The most common cause is a missing `jaeger-mcp-server` RemoteMCPServer or an ImagePullBackOff on the
+> jaeger-mcp-server pod. See `docs/troubleshooting-kagent.txt` Problème 3.
 
 ### Step 5 — Install OpenTelemetry Operator
 
@@ -473,20 +480,6 @@ kubectl get instrumentation -n observability
 ### Step 7 — Deploy the self-hosted GitHub Actions runner
 
 The runner uses a **long-lived GitHub PAT** (`ACCESS_TOKEN`) rather than a one-time registration token. The `myoung34/github-runner` image automatically exchanges the PAT for a fresh registration token on every pod start — no manual renewal needed.
-
-> **Clusters multiples :** chaque cluster doit avoir un nom de runner et des labels distincts
-> pour éviter que GitHub envoie les jobs au mauvais cluster.
-> Modifier `RUNNER_NAME` et `LABELS` dans `runner.yaml` avant d'appliquer :
-> ```yaml
-> - name: RUNNER_NAME
->   value: aks-runner-<ENV>        # ex: aks-runner-prod, aks-runner-test1
-> - name: LABELS
->   value: self-hosted,aks,<ENV>   # ex: self-hosted,aks,test1
-> ```
-> Et adapter `runs-on` dans le workflow : `runs-on: [self-hosted, aks, <ENV>]`
-
-> **Token type :** utiliser un PAT (`ghp_...` ou `github_pat_...`) — les tokens OAuth (`gho_...`)
-> ne fonctionnent pas pour l'enregistrement du runner et échouent avec "Token is not valid".
 
 #### 7.1 Create the runner PAT secret
 
@@ -563,23 +556,13 @@ kubectl create secret generic preview-github-token \
 **Azure OpenAI (used in this setup)**
 
 ```bash
-# ⚠️  WSL/Windows : toujours utiliser tr -d '\r\n' sur les sorties az CLI
 AOAI_KEY=$(az cognitiveservices account keys list \
   --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "key1" -o tsv | tr -d '\r\n')
+  --query "key1" -o tsv)
 
 kubectl create secret generic ai-api-key \
   --namespace preview-operator-system \
   --from-literal=api-key="$AOAI_KEY"
-
-# Configurer l'URL de base Azure OpenAI (endpoint sans le path /deployments/...)
-AOAI_ENDPOINT=$(az cognitiveservices account show \
-  --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "properties.endpoint" -o tsv | tr -d '\r\n')
-
-kubectl set env deployment/preview-operator \
-  AI_API_URL="$AOAI_ENDPOINT" \
-  -n preview-operator-system
 ```
 
 **OpenAI**
@@ -690,7 +673,7 @@ spec:
   # ── Contract Testing (Microcks OPEN_API_SCHEMA) ───────────────────────────
   contractTesting:
     enabled: true
-    specURL: https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/api/openapi.yaml
+    specURL: https://raw.githubusercontent.com/ihsenalaya/idp-preview/feat/preview-platform-v2/api/openapi.yaml
     importUsername: manager     # Microcks user with manager role (default: manager)
     # importPassword defaults to microcks123; override via MICROCKS_PASSWORD env
 
@@ -1446,10 +1429,10 @@ Cause: the CRD schema is missing a field that the controller writes to `status` 
 Fix: always apply the CRD **before** helm upgrade.
 
 ```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 1.0.21 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
   | tail -n +3 | kubectl apply -f -
 helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 1.0.21 --namespace preview-operator-system
+  --version 0.13.8 --namespace preview-operator-system
 ```
 
 ### Preview stuck in Provisioning
@@ -1505,12 +1488,12 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.21** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.19** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **1.0.21** | Copilot commands + checkpoint API |
+| Preview Extension | `preview-operator-system` | **1.0.12** | Copilot commands + checkpoint API |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
 | kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
 
@@ -1528,7 +1511,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.21** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.19** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1549,7 +1532,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.21                                            │
+│  Preview Operator 1.0.19                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
@@ -1670,8 +1653,6 @@ make microcks-contract-test
 # Apply kagent resources
 kubectl apply -f k8s/kagent/namespace.yaml
 kubectl apply -f k8s/kagent/rbac-readonly.yaml
-kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
-kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
 kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
 ```
 

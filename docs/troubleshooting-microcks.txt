@@ -193,6 +193,80 @@ microcks-contract-tests : 7 passed, 2 failed (échecs attendus/connus)
               mocker la réponse dans le spec
 
 -------------------------------------------------------------------------------
+PROBLÈME 6 — Import HTTP 500 : KEYCLOAK_URL HTTPS/443 refusé (keycloak.privateUrl manquant)
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Le job microcks-import échoue avec :
+    Microcks import error: 500 {"timestamp":...,"status":500,...}
+  Les logs Microcks montrent :
+    I/O error on GET request for "https://keycloak.20.x.x.x.nip.io/realms/microcks/
+    .well-known/openid-configuration": Connection refused
+
+Cause :
+  Le chart Helm Microcks génère KEYCLOAK_URL=https://<keycloak.url> (HTTPS/443).
+  Or, dans un cluster AKS avec Istio, les pods ne peuvent pas accéder à leur
+  propre LoadBalancer IP (pas de hairpin NAT). La connexion à HTTPS/443 depuis
+  l'intérieur du cluster échoue systématiquement avec "Connection refused".
+
+  Microcks utilise KEYCLOAK_URL pour valider les tokens OAuth2 en appelant
+  /realms/microcks/.well-known/openid-configuration → si cette URL est
+  inaccessible, tout appel API retourne HTTP 500.
+
+Diagnostic :
+  Depuis le pod Microcks :
+    kubectl exec -n microcks deploy/microcks -- curl -sv --max-time 10 \
+      'https://keycloak.<IP>.nip.io/realms/microcks/.well-known/openid-configuration'
+    → connect to <IP> port 443 failed: Connection refused
+
+Solution :
+  Passer le paramètre keycloak.privateUrl au chart Helm Microcks pour forcer
+  l'usage de l'URL service interne (HTTP/8080) pour la validation des tokens :
+
+    helm install microcks microcks/microcks \
+      --namespace microcks \
+      --set microcks.url=microcks.<IP>.nip.io \
+      --set microcks.generateCert=false \
+      --set microcks.ingressClassName=nginx \
+      --set keycloak.url=keycloak.<IP>.nip.io \
+      --set keycloak.privateUrl=http://microcks-keycloak.microcks.svc.cluster.local:8080 \
+      --set keycloak.generateCert=false \
+      --set keycloak.ingressClassName=nginx
+
+  Résultat : deux variables d'environnement sont créées dans le pod Microcks :
+    KEYCLOAK_URL        = http://microcks-keycloak.microcks.svc.cluster.local:8080
+    KEYCLOAK_PUBLIC_URL = https://keycloak.<IP>.nip.io
+
+  IMPORTANT : si Microcks est déjà installé, faire un helm uninstall + delete pvc
+  avant de réinstaller. Un helm upgrade --set keycloak.privateUrl=... génère de
+  nouveaux mots de passe aléatoires pour PostgreSQL, ce qui corrompt l'auth
+  Keycloak (les PVCs gardent les anciens mots de passe).
+
+    kubectl delete pvc --all -n microcks
+
+Vérification :
+  Depuis le pod Microcks, tester le token :
+    kubectl exec -n microcks deploy/microcks -- curl -s \
+      -X POST 'http://microcks-keycloak.microcks.svc.cluster.local:8080/realms/microcks/protocol/openid-connect/token' \
+      --data 'grant_type=password&client_id=microcks-serviceaccount&client_secret=ab54d329-e435-41ae-a900-ec6b3fe15c54&username=manager&password=microcks123' \
+      | grep -o '"access_token":"[^"]\{1,30\}'
+    → "access_token":"eyJhbG...
+
+  Tester l'endpoint upload (204 = auth OK) :
+    TOKEN=$(kubectl exec -n microcks deploy/microcks -- curl -s \
+      -X POST 'http://microcks-keycloak.microcks.svc.cluster.local:8080/realms/microcks/protocol/openid-connect/token' \
+      --data 'grant_type=password&client_id=microcks-serviceaccount&client_secret=ab54d329-e435-41ae-a900-ec6b3fe15c54&username=manager&password=microcks123' \
+      | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+    kubectl exec -n microcks deploy/microcks -- curl -s -o /dev/null -w '%{http_code}' \
+      -X POST 'http://localhost:8080/api/artifact/upload?mainArtifact=true' \
+      -H "Authorization: Bearer $TOKEN" \
+      -F "file=@/dev/null;type=application/json"
+    → 204
+
+Date de résolution : 2026-05-10
+Clusters affectés : test1 (prod était déjà correctement installé avec privateUrl)
+
+-------------------------------------------------------------------------------
 NOTES DE CONFIGURATION
 -------------------------------------------------------------------------------
 
