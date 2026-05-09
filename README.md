@@ -1,6 +1,6 @@
-# idp-testing — Cellenza Preview Platform
+# idp-preview — Preview Platform
 
-Demo application and reference implementation for the **Cellenza Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, and AI-generated seed data.
+Demo application and reference implementation for the **Preview Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, and AI-generated seed data.
 
 ---
 
@@ -9,7 +9,7 @@ Demo application and reference implementation for the **Cellenza Operator** — 
 1. [General Architecture](#1-general-architecture)
 2. [Prerequisites](#2-prerequisites)
 3. [Cluster Installation](#3-cluster-installation)
-4. [The Cellenza Custom Resource](#4-the-cellenza-custom-resource)
+4. [The Preview Custom Resource](#4-the-preview-custom-resource)
 5. [Controller Deep Dive](#5-controller-deep-dive)
 6. [Test Suite Orchestration](#6-test-suite-orchestration)
 7. [AI Enrichment Orchestration](#7-ai-enrichment-orchestration)
@@ -38,14 +38,14 @@ Demo application and reference implementation for the **Cellenza Operator** — 
 │                                                                                 │
 │  1. Kaniko Job  ──────► build image from git HEAD ──► push to GHCR             │
 │  2. github.rest.repos.createDeployment() ──► returns deploymentId              │
-│  3. kubectl apply Secret (CELLENZA_GITHUB_TOKEN)                                │
-│  4. kubectl apply Cellenza CR ──► name: pr-<N>                                 │
+│  3. kubectl apply Secret (PREVIEW_GITHUB_TOKEN)                                │
+│  4. kubectl apply Preview CR ──► name: pr-<N>                                 │
 │  5. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
 └────────────────────────────┬────────────────────────────────────────────────────┘
                              │ CR created / updated in etcd
                              ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  Cellenza Operator  (controller-runtime reconcile loop)                         │
+│  Preview Operator  (controller-runtime reconcile loop)                         │
 │                                                                                 │
 │  PHASE: Pending ──► (requiresApproval gate)                                    │
 │                                                                                 │
@@ -62,7 +62,7 @@ Demo application and reference implementation for the **Cellenza Operator** — 
 │                                                                                 │
 │  PHASE: Running                                                                 │
 │    ├── Post GitHub Deployment: success + URL                                   │
-│    ├── Post PR comment: "## Cellenza Preview Ready"                            │
+│    ├── Post PR comment: "## Preview Preview Ready"                            │
 │    │                                                                            │
 │    ├── [AI ENRICHMENT — runs first, blocks tests until done]                  │
 │    │     step 1: schema-dump Job   ──► pg_dump --schema-only                  │
@@ -87,13 +87,13 @@ Demo application and reference implementation for the **Cellenza Operator** — 
           ┌──────────────────┼──────────────────────┐
           │                  │                       │
           ▼                  ▼                       ▼
-    PR merged /        TTL expired             @cellenza
+    PR merged /        TTL expired             @preview
     PR closed          (default 48h)           retest-ai
           │                  │                       │
           └──────────────────┘                       │
                    │                                 │
     cleanup.yaml   │                         AI-only rerun cycle
-    kubectl delete Cellenza ◄────────────┐   (skips smoke/regression/e2e)
+    kubectl delete Preview ◄────────────┐   (skips smoke/regression/e2e)
     finalizer teardown                   │
     GitHub Deployment: inactive          │
                                          └─ spec.aiEnrichment.rerunRequested=true
@@ -103,8 +103,8 @@ Demo application and reference implementation for the **Cellenza Operator** — 
 
 ```
 cluster
-├── cellenza-operator-system/          ← operator + extension
-│     └── cellenza-operator pod
+├── preview-operator-system/          ← operator + extension
+│     └── preview-operator pod
 ├── github-runner/                     ← self-hosted Actions runner + Kaniko jobs
 ├── observability/                     ← Jaeger + OTel Collector + Instrumentation
 │
@@ -200,36 +200,36 @@ kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-n
 
 > **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the Preview](#accessing-the-preview)).
 
-### Step 4 — Install the Cellenza Operator
+### Step 4 — Install the Preview Operator
 
 The chart is published as an OCI artifact on GHCR (public, no login required).
 
 ```bash
-helm install cellenza-operator \
-  oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
+helm install preview-operator \
+  oci://ghcr.io/ihsenalaya/charts/preview-operator \
   --version 0.13.8 \
-  --namespace cellenza-operator-system \
+  --namespace preview-operator-system \
   --create-namespace \
   --wait
 
-kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
-kubectl get crd cellenzas.platform.company.io
+kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
+kubectl get crd previews.platform.company.io
 ```
 
 #### Upgrading the operator
 
 ```bash
 # Always apply the CRD first — Helm does NOT update CRDs automatically
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.8 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
   | tail -n +3 \
   | kubectl apply -f -
 
-helm upgrade cellenza-operator \
-  oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
+helm upgrade preview-operator \
+  oci://ghcr.io/ihsenalaya/charts/preview-operator \
   --version 0.13.8 \
-  --namespace cellenza-operator-system
+  --namespace preview-operator-system
 
-kubectl -n cellenza-operator-system rollout status deployment/cellenza-operator --timeout=120s
+kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 ```
 
 > `tail -n +3` strips the two-line Helm OCI pull header that `helm show crds` prepends.
@@ -250,10 +250,10 @@ kubectl -n opentelemetry-operator-system rollout status deployment/opentelemetry
 ### Step 6 — Deploy Jaeger and OTel Collector
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/jaeger.yaml
+kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/jaeger.yaml
 kubectl -n observability rollout status deployment/jaeger --timeout=120s
 
-kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-testing/main/otel.yaml
+kubectl apply -f https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/otel.yaml
 kubectl -n observability rollout status deployment/otel-collector --timeout=120s
 
 kubectl get otelcol -n observability
@@ -360,7 +360,7 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 #### 7.3 Set the GitHub Actions secret
 
 ```bash
-gh secret set CELLENZA_GITHUB_TOKEN \
+gh secret set PREVIEW_GITHUB_TOKEN \
   --repo <OWNER>/<REPO> \
   --body "<YOUR_GITHUB_PAT>"
 ```
@@ -378,8 +378,8 @@ Minimum token permissions:
 #### 7.4 Create the operator secret
 
 ```bash
-kubectl create secret generic cellenza-github-token \
-  --namespace cellenza-operator-system \
+kubectl create secret generic preview-github-token \
+  --namespace preview-operator-system \
   --from-literal=token="<YOUR_GITHUB_PAT>"
 ```
 
@@ -389,19 +389,19 @@ kubectl create secret generic cellenza-github-token \
 
 ```bash
 kubectl create secret generic ai-api-key \
-  --namespace cellenza-operator-system \
+  --namespace preview-operator-system \
   --from-literal=api-key="<YOUR_GITHUB_TOKEN>"
 
-kubectl set env deployment/cellenza-operator \
+kubectl set env deployment/preview-operator \
   AI_API_URL=https://models.inference.ai.azure.com \
-  -n cellenza-operator-system
+  -n preview-operator-system
 ```
 
 **OpenAI**
 
 ```bash
 kubectl create secret generic ai-api-key \
-  --namespace cellenza-operator-system \
+  --namespace preview-operator-system \
   --from-literal=api-key="sk-..."
 # No AI_API_URL override needed — the operator default is https://api.openai.com/v1
 ```
@@ -418,13 +418,13 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 
 ---
 
-## 4. The Cellenza Custom Resource
+## 4. The Preview Custom Resource
 
 ### Complete annotated example
 
 ```yaml
 apiVersion: platform.company.io/v1alpha1
-kind: Cellenza
+kind: Preview
 metadata:
   name: pr-42
 spec:
@@ -432,18 +432,18 @@ spec:
   # ── Identity ───────────────────────────────────────────────────────────────
   branch: feature/my-feature
   prNumber: 42
-  image: ghcr.io/ihsenalaya/idp-testing:sha-abc   # ignored when services[] is set
+  image: ghcr.io/ihsenalaya/idp-preview:sha-abc   # ignored when services[] is set
   ttl: 48h                                          # default 48h — supports: 1h 24h 72h etc.
   resourceTier: medium                              # small | medium | large
 
   # ── Multi-service (frontend + backend) ────────────────────────────────────
   services:
     - name: backend
-      image: ghcr.io/ihsenalaya/idp-testing:sha-abc
+      image: ghcr.io/ihsenalaya/idp-preview:sha-abc
       port: 8080
       pathPrefix: /api          # ingress routes /api/* → svc-backend:8080
     - name: frontend
-      image: ghcr.io/ihsenalaya/idp-testing:sha-abc
+      image: ghcr.io/ihsenalaya/idp-preview:sha-abc
       port: 3000
       pathPrefix: /             # ingress routes /* → svc-frontend:3000
       env:
@@ -470,7 +470,7 @@ spec:
   # ── Telemetry ──────────────────────────────────────────────────────────────
   telemetry:
     enabled: true
-    serviceName: idp-testing-pr-42
+    serviceName: idp-preview-pr-42
     autoInstrumentation:
       language: python
       instrumentationRef: observability/python
@@ -491,27 +491,27 @@ spec:
       name: ai-api-key
       key: api-key
     githubTokenSecretRef:
-      name: cellenza-github-token
-      namespace: cellenza-operator-system
+      name: preview-github-token
+      namespace: preview-operator-system
       key: token
     model: gpt-4o-mini          # gpt-4o-mini (fast + cheap) | gpt-4o (better quality)
     seed:
       enabled: true             # generates + runs seed.sql
     tests:
       enabled: true             # generates + runs test.py
-    # rerunRequested: true      # set by @cellenza retest-ai — triggers AI-only rerun
+    # rerunRequested: true      # set by @preview retest-ai — triggers AI-only rerun
 
   # ── GitHub integration ─────────────────────────────────────────────────────
   github:
     enabled: true
     owner: ihsenalaya
-    repo: idp-testing
+    repo: idp-preview
     deploymentId: 123456789     # returned by github.rest.repos.createDeployment()
     environment: pr-42
     commentOnReady: true
     tokenSecretRef:
-      name: cellenza-github-token
-      namespace: cellenza-operator-system
+      name: preview-github-token
+      namespace: preview-operator-system
       key: token
 ```
 
@@ -525,8 +525,8 @@ spec:
 | `POSTGRES_DB` | `appdb` |
 | `PREVIEW_BRANCH` | `feature/my-feature` |
 | `PREVIEW_PR` | `42` |
-| `OTEL_SERVICE_NAME` | `idp-testing-pr-42` |
-| `OTEL_RESOURCE_ATTRIBUTES` | `cellenza.name=pr-42,cellenza.pr_number=42,…` |
+| `OTEL_SERVICE_NAME` | `idp-preview-pr-42` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `preview.name=pr-42,preview.pr_number=42,…` |
 
 ### Resource tiers
 
@@ -557,14 +557,14 @@ The controller uses **controller-runtime** and follows the standard Kubernetes r
 ```
 Reconcile(ctx, req)
      │
-     ├── 1. Fetch Cellenza CR  (return nil if NotFound)
+     ├── 1. Fetch Preview CR  (return nil if NotFound)
      │
      ├── 2. Deletion?  ──► handleDeletion()
      │         └── remove namespace, owned resources, then remove finalizer
      │
      ├── 3. Add finalizer if missing  (guarantees teardown runs on delete)
      │
-     ├── 4. TTL expired?  ──► patch status Expired + r.Delete(cellenza)
+     ├── 4. TTL expired?  ──► patch status Expired + r.Delete(preview)
      │
      ├── 5. Approval gate?  ──► return RequeueAfter=30s  (phase=Pending)
      │
@@ -626,7 +626,7 @@ The controller never runs long operations inline — it delegates every side-eff
 The controller tracks all progress in `status` — persisted in etcd. If the operator pod restarts mid-pipeline, it resumes exactly where it left off by reading the status fields.
 
 ```bash
-kubectl get cellenza pr-42 -o jsonpath='{.status}' | jq .
+kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 ```
 
 ```json
@@ -680,18 +680,18 @@ kubectl get cellenza pr-42 -o jsonpath='{.status}' | jq .
 
 ```bash
 # Quick overview
-kubectl get cellenza
+kubectl get preview
 # NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
 # pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me…    2026-05-10T09:00:00Z   2h
 
 # Current pipeline step
-kubectl get cellenza pr-42 -o jsonpath='{.status.tests.step}'
+kubectl get preview pr-42 -o jsonpath='{.status.tests.step}'
 
 # Watch jobs being created
 kubectl get jobs -n preview-pr-42 -w
 
 # Diagnostics on failure
-kubectl get cellenza pr-42 -o jsonpath='{.status.diagnostics}' | jq .
+kubectl get preview pr-42 -o jsonpath='{.status.diagnostics}' | jq .
 ```
 
 ---
@@ -705,7 +705,7 @@ A classic shared staging environment has two fatal problems:
 - **Cross-PR pollution** — two PRs running simultaneously share the database; test data from PR #28 corrupts the assertions of PR #29.
 - **Unstable data** — staging accumulates data from previous runs; a test that expects 10 products may find 247.
 
-The Cellenza controller solves both by giving each PR its own namespace + database, and by taking a **checkpoint** of the database immediately after the AI seed — then restoring to that checkpoint before every test suite, and again before every individual E2E test.
+The Preview controller solves both by giving each PR its own namespace + database, and by taking a **checkpoint** of the database immediately after the AI seed — then restoring to that checkpoint before every test suite, and again before every individual E2E test.
 
 ### Full pipeline chronology
 
@@ -756,7 +756,7 @@ The Cellenza controller solves both by giving each PR its own namespace + databa
                     │  Image: mcr.microsoft.com/playwright/python:v1.44.0  │
                     │  APP_URL=http://svc-frontend:3000                     │
                     │  FRONTEND_URL=http://svc-frontend:3000                │
-                    │  CHECKPOINT_API=http://cellenza-extension:8090/…     │
+                    │  CHECKPOINT_API=http://preview-extension:8090/…     │
                     │                                                       │
                     │  test_catalog_page_loads    ← reset_db() first       │
                     │  test_preview_badge_shown   ← reset_db() first       │
@@ -787,7 +787,7 @@ Level 2: between each E2E test
 ```
 e2e pod
   │
-  ├── reset_db()  →  POST http://cellenza-extension/api/previews/pr-42/
+  ├── reset_db()  →  POST http://preview-extension/api/previews/pr-42/
   │                       checkpoints/after-seed/restore
   │
   │   Extension patches CR:
@@ -825,12 +825,12 @@ If a job is running, the controller returns `RequeueAfter=10s` and exits — it 
 
 ```bash
 # Summary
-kubectl get cellenza pr-42 -o jsonpath='{.status.tests}' | jq .
+kubectl get preview pr-42 -o jsonpath='{.status.tests}' | jq .
 
 # Per-suite
-kubectl get cellenza pr-42 -o jsonpath='{.status.tests.smoke}'
-kubectl get cellenza pr-42 -o jsonpath='{.status.tests.regression}'
-kubectl get cellenza pr-42 -o jsonpath='{.status.tests.e2e}'
+kubectl get preview pr-42 -o jsonpath='{.status.tests.smoke}'
+kubectl get preview pr-42 -o jsonpath='{.status.tests.regression}'
+kubectl get preview pr-42 -o jsonpath='{.status.tests.e2e}'
 
 # Live logs during execution
 kubectl logs -n preview-pr-42 job/smoke-tests -f
@@ -841,7 +841,7 @@ kubectl logs -n preview-pr-42 job/e2e-tests -f
 ### PR comment produced automatically
 
 ```
-## Cellenza Test Suite Results
+## Preview Test Suite Results
 
 **Overall: ✅ Succeeded**
 
@@ -870,8 +870,8 @@ The AI seed job inserts realistic product data — names, descriptions, prices, 
 
 ```go
 // controller logic — tests.go
-if aiEnrichmentEnabled(cellenza) {
-    aiPhase := cellenza.Status.AIEnrichment.Phase
+if aiEnrichmentEnabled(preview) {
+    aiPhase := preview.Status.AIEnrichment.Phase
     if aiPhase != "Succeeded" && aiPhase != "Failed" {
         return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
     }
@@ -904,7 +904,7 @@ Preview reaches Running phase
 │  Prompt includes:                                                    │
 │    - DB schema (from ConfigMap)                                      │
 │    - PR diff (lines changed)                                         │
-│    - system prompt (from operator config or @cellenza set-prompt)   │
+│    - system prompt (from operator config or @preview set-prompt)   │
 │                                                                      │
 │  LLM produces:                                                       │
 │    seed.sql  → INSERT INTO categories…; INSERT INTO products…;      │
@@ -963,9 +963,9 @@ spec:
 For any non-OpenAI provider, set `AI_API_URL`:
 
 ```bash
-kubectl set env deployment/cellenza-operator \
+kubectl set env deployment/preview-operator \
   AI_API_URL=https://models.inference.ai.azure.com \
-  -n cellenza-operator-system
+  -n preview-operator-system
 ```
 
 ### Trigger an AI-only rerun
@@ -974,10 +974,10 @@ Use this when you change the AI prompt, the operator image, or want fresh data w
 
 ```bash
 # Via Copilot Extension
-@cellenza retest-ai pr-42
+@preview retest-ai pr-42
 
 # Via kubectl
-kubectl patch cellenza pr-42 --type=merge \
+kubectl patch preview pr-42 --type=merge \
   -p='{"spec":{"aiEnrichment":{"rerunRequested":true}}}'
 ```
 
@@ -990,8 +990,8 @@ The controller:
 ### Per-environment prompt override
 
 ```bash
-@cellenza set-prompt pr-42 "Generate products for a luxury watchmaker. Include Swiss brands, price range €500–€10000, at least 3 watch complications."
-@cellenza retest-ai pr-42
+@preview set-prompt pr-42 "Generate products for a luxury watchmaker. Include Swiss brands, price range €500–€10000, at least 3 watch complications."
+@preview retest-ai pr-42
 ```
 
 ### AI test format
@@ -1008,13 +1008,13 @@ The operator calls the GitHub API directly from its reconciliation loop — no e
 
 ```
 ┌──────────────────┬──────────────────────┬─────────────────────────────────────┐
-│ Cellenza phase   │ GitHub Deployment    │ PR comment                          │
+│ Preview phase   │ GitHub Deployment    │ PR comment                          │
 ├──────────────────┼──────────────────────┼─────────────────────────────────────┤
 │ Pending          │ queued               │ —                                   │
 │ Provisioning     │ in_progress          │ 🔄 Provisioning en cours…           │
-│ Running          │ success + URL        │ ## Cellenza Preview Ready           │
+│ Running          │ success + URL        │ ## Preview Preview Ready           │
 │                  │                      │ URL + DB evidence + test results    │
-│ Failed           │ failure              │ ## Cellenza Preview Failed          │
+│ Failed           │ failure              │ ## Preview Preview Failed          │
 │                  │                      │ diagnostics + pod logs              │
 │ Terminating      │ inactive             │ — (posted by cleanup.yaml)          │
 └──────────────────┴──────────────────────┴─────────────────────────────────────┘
@@ -1025,8 +1025,8 @@ The operator calls the GitHub API directly from its reconciliation loop — no e
 Before every GitHub API call, the controller checks `status.github.deploymentState`, `lastNotifiedPhase`, and `commentId`. If the state was already written → zero API call, even across 100 reconcile loops. The PR comment is updated in-place (same `commentId`) rather than creating a new comment each time.
 
 ```bash
-kubectl get cellenza pr-42 -o jsonpath='{.status.github}' | jq .
-kubectl get cellenza pr-42 -o jsonpath='{.status.github.lastError}'
+kubectl get preview pr-42 -o jsonpath='{.status.github}' | jq .
+kubectl get preview pr-42 -o jsonpath='{.status.github.lastError}'
 ```
 
 ### Accessing the preview
@@ -1040,7 +1040,7 @@ http://pr-<NUMBER>.preview.localtest.me:8080
 
 # Jaeger traces
 kubectl port-forward -n observability svc/jaeger 16686:16686
-# Open http://localhost:16686 → service: idp-testing-pr-42
+# Open http://localhost:16686 → service: idp-preview-pr-42
 ```
 
 > **WSL2:** run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
@@ -1055,33 +1055,33 @@ Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl`
 
 | Command | Description |
 |---|---|
-| `@cellenza list` | List all active environments |
-| `@cellenza status pr-42` | Phase, URL, DB state, TTL remaining |
-| `@cellenza logs pr-42` | Last 40 lines from the app pod |
-| `@cellenza extend pr-42 24h` | Extend TTL |
-| `@cellenza wake pr-42` | Restart a scaled-down environment |
-| `@cellenza reset-db pr-42` | Delete + re-run migration and seed |
-| `@cellenza run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview DB |
-| `@cellenza retest-ai pr-42` | Trigger AI-only rerun |
-| `@cellenza set-prompt pr-42 <text>` | Set custom AI instructions |
-| `@cellenza show-prompt pr-42` | Show current AI prompt |
-| `@cellenza help` | Show all commands |
+| `@preview list` | List all active environments |
+| `@preview status pr-42` | Phase, URL, DB state, TTL remaining |
+| `@preview logs pr-42` | Last 40 lines from the app pod |
+| `@preview extend pr-42 24h` | Extend TTL |
+| `@preview wake pr-42` | Restart a scaled-down environment |
+| `@preview reset-db pr-42` | Delete + re-run migration and seed |
+| `@preview run-sql pr-42 <sql>` | Execute arbitrary SQL on the preview DB |
+| `@preview retest-ai pr-42` | Trigger AI-only rerun |
+| `@preview set-prompt pr-42 <text>` | Set custom AI instructions |
+| `@preview show-prompt pr-42` | Show current AI prompt |
+| `@preview help` | Show all commands |
 
 ### `run-sql` examples
 
 ```
 # Inspect
-@cellenza run-sql pr-42 SELECT COUNT(*) FROM products;
-@cellenza run-sql pr-42 SELECT p.name, AVG(r.rating) FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name;
+@preview run-sql pr-42 SELECT COUNT(*) FROM products;
+@preview run-sql pr-42 SELECT p.name, AVG(r.rating) FROM products p LEFT JOIN reviews r ON r.product_id = p.id GROUP BY p.name;
 
 # Modify schema
-@cellenza run-sql pr-42 ALTER TABLE products ADD COLUMN featured BOOLEAN DEFAULT false;
+@preview run-sql pr-42 ALTER TABLE products ADD COLUMN featured BOOLEAN DEFAULT false;
 
 # Insert test data
-@cellenza run-sql pr-42 INSERT INTO products (name, price, stock) VALUES ('Test', 9.99, 10);
+@preview run-sql pr-42 INSERT INTO products (name, price, stock) VALUES ('Test', 9.99, 10);
 
 # Reset
-@cellenza run-sql pr-42 TRUNCATE orders RESTART IDENTITY CASCADE;
+@preview run-sql pr-42 TRUNCATE orders RESTART IDENTITY CASCADE;
 ```
 
 ### Deploy the extension
@@ -1089,10 +1089,10 @@ Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl`
 ```bash
 kubectl apply -f config/extension/rbac.yaml
 kubectl apply -f config/extension/deployment.yaml
-kubectl -n cellenza-operator-system rollout status deployment/cellenza-extension --timeout=60s
+kubectl -n preview-operator-system rollout status deployment/preview-extension --timeout=60s
 
 # Expose for local Kind
-kubectl port-forward -n cellenza-operator-system svc/cellenza-extension 8090:8090 &
+kubectl port-forward -n preview-operator-system svc/preview-extension 8090:8090 &
 ngrok http 8090
 # Copy the HTTPS URL → paste as webhook URL in your GitHub App settings
 ```
@@ -1174,8 +1174,8 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 | `tests/regression.py` | 9 endpoint regression tests |
 | `tests/e2e.py` | 6 Playwright E2E tests |
 | `tests/example_test.py` | 18-test template used by AI to generate `test.py` |
-| `.github/workflows/preview.yaml` | CI: build → deploy Cellenza CR |
-| `.github/workflows/cleanup.yaml` | CI: delete Cellenza CR on PR close |
+| `.github/workflows/preview.yaml` | CI: build → deploy Preview CR |
+| `.github/workflows/cleanup.yaml` | CI: delete Preview CR on PR close |
 
 ---
 
@@ -1197,10 +1197,10 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 
 Symptom: workflow times out at `kubectl wait job/kaniko-…`, pod logs show only `Pushing image to ghcr.io/…`.
 
-Cause: `CELLENZA_GITHUB_TOKEN` secret missing or lacks `write:packages`.
+Cause: `PREVIEW_GITHUB_TOKEN` secret missing or lacks `write:packages`.
 
 ```bash
-gh secret set CELLENZA_GITHUB_TOKEN --repo <OWNER>/<REPO> --body "<PAT>"
+gh secret set PREVIEW_GITHUB_TOKEN --repo <OWNER>/<REPO> --body "<PAT>"
 git commit --allow-empty -m "ci: retrigger" && git push
 ```
 
@@ -1211,16 +1211,16 @@ Cause: the CRD schema is missing a field that the controller writes to `status` 
 Fix: always apply the CRD **before** helm upgrade.
 
 ```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/cellenza-operator --version 0.13.8 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
   | tail -n +3 | kubectl apply -f -
-helm upgrade cellenza-operator oci://ghcr.io/ihsenalaya/charts/cellenza-operator \
-  --version 0.13.8 --namespace cellenza-operator-system
+helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
+  --version 0.13.8 --namespace preview-operator-system
 ```
 
 ### Preview stuck in Provisioning
 
 ```bash
-kubectl describe cellenza pr-<N>
+kubectl describe preview pr-<N>
 kubectl get events -n preview-pr-<N> --sort-by='.lastTimestamp'
 ```
 
@@ -1233,14 +1233,14 @@ kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-n
 helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --set controller.admissionWebhooks.enabled=false --wait
-kubectl delete cellenza pr-<N> --ignore-not-found
+kubectl delete preview pr-<N> --ignore-not-found
 git commit --allow-empty -m "ci: retrigger" && git push
 ```
 
 ### Preview Failed — read diagnostics
 
 ```bash
-kubectl get cellenza pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
+kubectl get preview pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
 # .podLogs      → last 30 lines of the crashed app container
 # .lastEvents   → recent Warning events from the namespace
 # .debugCommands → kubectl commands for further investigation
@@ -1249,7 +1249,7 @@ kubectl get cellenza pr-<N> -o jsonpath='{.status.diagnostics}' | jq .
 ### No traces in Jaeger
 
 ```bash
-kubectl get pod -n preview-pr-<N> -l app=cellenza-preview \
+kubectl get pod -n preview-pr-<N> -l app=preview-preview \
   -o jsonpath='{.items[0].metadata.annotations}' | grep instrumentation
 # Expected: "instrumentation.opentelemetry.io/inject-python": "observability/python"
 ```
@@ -1269,9 +1269,9 @@ helm repo update
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
-| Cellenza Operator | `cellenza-operator-system` | **0.13.8** | Multi-service, sequential test pipeline, AI enrichment, checkpoint restore |
+| Preview Operator | `preview-operator-system` | **0.13.8** | Multi-service, sequential test pipeline, AI enrichment, checkpoint restore |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Cellenza Extension | `cellenza-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
+| Preview Extension | `preview-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
