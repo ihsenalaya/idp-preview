@@ -120,3 +120,114 @@ RBAC :
   (SA du déploiement kagent), pas "kagent-troubleshooter". Le ClusterRole
   custom n'est donc pas utilisé. L'agent s'appuie sur les permissions du
   SA par défaut kagent + kagent-tools-cluster-admin-role pour les tool calls.
+
+-------------------------------------------------------------------------------
+PROBLÈME 3 — preview-troubleshooter-agent ACCEPTED=False (jaeger-mcp-server manquant)
+-------------------------------------------------------------------------------
+
+Symptôme :
+  kubectl get agent preview-troubleshooter-agent -n kagent-system
+  → READY=(vide)  ACCEPTED=False
+
+  kubectl describe agent preview-troubleshooter-agent -n kagent-system
+  → Message: "failed to compile agent ... RemoteMCPServer.kagent.dev
+    'jaeger-mcp-server' not found"
+
+  L'opérateur reçoit : "A2A call: ... dial tcp: lookup
+  preview-troubleshooter-agent.kagent-system.svc.cluster.local: no such host"
+  (le service n'est pas créé tant que l'agent n'est pas Accepted)
+
+Cause :
+  Le manifest k8s/kagent/jaeger-mcp-server.yaml n'a pas été appliqué.
+  L'agent référence le RemoteMCPServer "jaeger-mcp-server" ; sans lui,
+  le contrôleur kagent refuse de compiler l'agent.
+
+Solution :
+  1. Créer le pull secret GHCR dans kagent-system (l'image est privée) :
+       GH_TOKEN=$(cat ~/.config/gh/hosts.yml | grep oauth_token | awk '{print $2}')
+       kubectl create secret docker-registry ghcr-pull-secret \
+         --namespace kagent-system \
+         --docker-server=ghcr.io \
+         --docker-username=<GITHUB_USER> \
+         --docker-password="$GH_TOKEN"
+
+  2. Appliquer le manifest jaeger-mcp-server :
+       kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
+       kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
+
+  3. Redémarrer l'agent pour qu'il se reconcilie :
+       kubectl rollout restart deployment/preview-troubleshooter-agent -n kagent-system
+
+  4. Vérifier :
+       kubectl get agent preview-troubleshooter-agent -n kagent-system
+       # → READY=True  ACCEPTED=True
+       kubectl get svc preview-troubleshooter-agent -n kagent-system
+       # → le service doit exister sur le port 8080
+
+Vérification finale :
+  Si ACCEPTED=True mais l'analyse échoue encore, voir PROBLÈME 4 ci-dessous.
+
+-------------------------------------------------------------------------------
+PROBLÈME 4 — 401 Azure OpenAI : clé corrompue par CRLF (WSL/Windows)
+-------------------------------------------------------------------------------
+
+Symptôme :
+  Log opérateur :
+    ERROR kagent analysis failed {"error": "agent returned failed state"}
+  Log agent :
+    openai._base_client - INFO - Retrying request to /chat/completions in X seconds
+    (2 retries, puis runner closed, state = failed)
+
+  Test direct depuis le pod :
+    kubectl exec -n kagent-system deploy/preview-troubleshooter-agent -- python3 -c "
+      import os, openai
+      client = openai.AzureOpenAI(
+        azure_endpoint=os.environ['AZURE_OPENAI_ENDPOINT'],
+        api_key=os.environ['AZURE_OPENAI_API_KEY'],
+        api_version='2024-10-21'
+      )
+      r = client.chat.completions.create(model='gpt-4o-mini',
+        messages=[{'role':'user','content':'hi'}], max_tokens=5)
+      print(r.choices[0].message.content)"
+    → AuthenticationError: 401 Access denied due to invalid subscription key
+
+  Inspection du secret :
+    kubectl get secret kagent-openai -n kagent-system \
+      -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d | xxd | tail -2
+    → 0x0d à la fin de la clé (carriage return \r)
+
+Cause :
+  Sur WSL/Windows, az CLI retourne les valeurs avec \r\n en fin de ligne.
+  La commande $(az ... --query "key1" -o tsv) capture le \r, qui est
+  encodé dans le secret Kubernetes et envoyé tel quel dans le header
+  Authorization → Azure OpenAI rejette la clé corrompue.
+
+Solution :
+  Toujours utiliser tr -d '\r\n' lors de la capture de valeurs az CLI :
+
+    AOAI_KEY=$(az cognitiveservices account keys list \
+      --name "preview-openai" --resource-group "<RG>" \
+      --query "key1" -o tsv | tr -d '\r\n')
+
+    # Recréer le secret si déjà créé avec la clé corrompue :
+    kubectl delete secret kagent-openai -n kagent-system
+    kubectl create secret generic kagent-openai \
+      --namespace kagent-system \
+      --from-literal=OPENAI_API_KEY="$AOAI_KEY"
+
+    # Redémarrer le controller ET l'agent pour recharger le secret :
+    kubectl rollout restart deployment/kagent-controller -n kagent-system
+    kubectl rollout restart deployment/preview-troubleshooter-agent -n kagent-system
+
+  Note : l'env var injectée dans le pod est AZURE_OPENAI_API_KEY (pas
+  OPENAI_API_KEY) — c'est le kagent-controller qui fait le mapping.
+
+Vérification :
+  kubectl get secret kagent-openai -n kagent-system \
+    -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d | xxd | tail -1
+  → la dernière ligne ne doit PAS se terminer par 0d (0d = \r)
+
+  Test LLM depuis le pod (voir commande ci-dessus) → doit répondre "OK: ..."
+
+Date de résolution : 2026-05-10
+Clusters affectés : prod + test1 (même secret CRLF dans les deux)
