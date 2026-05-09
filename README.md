@@ -56,7 +56,7 @@ Demo application and reference implementation for the **Preview Operator** — a
 │    ├── Run Migration Job     (optional — if spec.database.migration)           │
 │    ├── Run Seed Job          (optional — if spec.database.seed)                │
 │    ├── Deploy Services       svc-backend (app.py:8080) + svc-frontend (3000)  │
-│    ├── Create Ingress        /api → backend   / → frontend                    │
+│    ├── Expose               VirtualService (Istio) or Nginx Ingress (auto-detected)│
 │    ├── Inject OTel           annotation → sidecar injected by OTel operator    │
 │    └── Post GitHub comment   "🔄 Provisioning en cours…"                      │
 │                                                                                 │
@@ -114,7 +114,7 @@ cluster
 │     ├── svc-backend  (app.py:8080)   │  isolated namespace
 │     ├── svc-frontend (frontend:3000) │  one per open PR
 │     ├── postgres                     │
-│     ├── Ingress (pr-1.preview.*)     │
+│     ├── VirtualService/Ingress        │  pr-1.preview.ihsenalaya.xyz
 │     └── Jobs (test/AI/restore…)      ┘
 │
 ├── preview-pr-2/                      ┐
@@ -174,11 +174,11 @@ kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
 kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
 ```
 
-### Step 3 — Install ingress-nginx
+### Step 3 — Install ingress-nginx (fallback without Istio)
 
-> Do **not** pin a version — older releases are removed from the repo index over time.
+> Skip this step if you are using Istio (Step 3b). The operator auto-detects which is available.
 
-**Important:** disable admission webhooks. In Kind, the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with `x509: certificate signed by unknown authority`.
+**Important:** disable admission webhooks in Kind clusters (webhook cert is self-signed):
 
 ```bash
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
@@ -190,18 +190,55 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 ```
 
-If already installed without this flag:
+### Step 3b — Install Istio (recommended for production / AKS)
+
+Istio provides public URLs without port-forwarding via a shared wildcard DNS entry.
 
 ```bash
-helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --set controller.admissionWebhooks.enabled=false \
-  --wait
+# Download istioctl
+curl -sL "https://github.com/istio/istio/releases/download/1.23.0/istioctl-1.23.0-linux-amd64.tar.gz" \
+  | tar -xz -C /usr/local/bin
 
-kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
+# Install Istio with ingress gateway
+istioctl install --set profile=minimal \
+  --set components.ingressGateways[0].enabled=true \
+  --set components.ingressGateways[0].name=istio-ingressgateway \
+  -y
+
+# Get the gateway external IP (wait until assigned)
+kubectl get svc istio-ingressgateway -n istio-system
+ISTIO_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Create wildcard DNS record in Azure DNS
+az network dns record-set a add-record \
+  --zone-name <YOUR_ZONE>   \
+  --resource-group <YOUR_RG> \
+  --record-set-name "*.preview" \
+  --ipv4-address "$ISTIO_IP" \
+  --ttl 300
+
+# Create the shared gateway (one per cluster)
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: preview-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*.preview.<YOUR_ZONE>"
+EOF
 ```
 
-> **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the Preview](#accessing-the-preview)).
+Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4).
 
 ### Step 4 — Install the Preview Operator
 
@@ -220,7 +257,8 @@ kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
-  --set image.tag=1.0.1 \
+  --set image.tag=1.0.19 \
+  --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
@@ -659,7 +697,7 @@ Reconcile(ctx, req)
      │
      ├── 9. reconcileServices()      ──► one Deployment + Service per spec.services[]
      │
-     ├── 10. reconcileIngress()      ──► nginx Ingress, path rules from pathPrefix
+     ├── 10. reconcileExposure()     ──► VirtualService (Istio) or Nginx Ingress (auto-detected)
      │
      ├── 11. reconcileTelemetry()    ──► inject OTel annotation on pods
      │
@@ -717,7 +755,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 ```json
 {
   "phase": "Running",
-  "url": "http://pr-42.preview.localtest.me:8080",
+  "url": "http://pr-42.preview.ihsenalaya.xyz",
   "namespaceName": "preview-pr-42",
   "readyAt": "2026-05-08T09:00:00Z",
   "expiresAt": "2026-05-10T09:00:00Z",
@@ -745,7 +783,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
     "deploymentState": "success",
     "lastNotifiedPhase": "Running",
     "commentId": 987654321,
-    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080"
+    "lastEnvironmentUrl": "http://pr-42.preview.ihsenalaya.xyz"
   }
 }
 ```
@@ -767,7 +805,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 # Quick overview
 kubectl get preview
 # NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
-# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me…    2026-05-10T09:00:00Z   2h
+# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.ihsenalaya.xyz   2026-05-10T09:00:00Z   2h
 
 # Current pipeline step
 kubectl get preview pr-42 -o jsonpath='{.status.tests.step}'
@@ -1138,19 +1176,28 @@ kubectl get preview pr-42 -o jsonpath='{.status.github.lastError}'
 
 ### Accessing the preview
 
+**With Istio (AKS / production)** — no port-forward needed:
+
 ```bash
-# Port-forward ingress (required for Kind)
+# URL is printed in the PR comment and in status:
+http://pr-<N>.preview.ihsenalaya.xyz
+
+kubectl get preview pr-<N> -o jsonpath='{.status.url}'
+```
+
+**With ingress-nginx (Kind / local)** — port-forward required:
+
+```bash
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
+# Then: http://pr-<N>.preview.localtest.me:8080
+```
 
-# Preview URL printed in the PR comment:
-http://pr-<NUMBER>.preview.localtest.me:8080
+**Jaeger traces:**
 
-# Jaeger traces
+```bash
 kubectl port-forward -n observability svc/jaeger 16686:16686
 # Open http://localhost:16686 → service: idp-preview-pr-42
 ```
-
-> **WSL2:** run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
 
 ---
 
@@ -1376,7 +1423,8 @@ helm repo update
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
-| Preview Operator | `preview-operator-system` | **1.0.12** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent |
+| Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
+| Preview Operator | `preview-operator-system` | **1.0.19** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1399,7 +1447,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.12** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.19** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1420,7 +1468,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.12                                            │
+│  Preview Operator 1.0.19                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
