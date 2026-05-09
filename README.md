@@ -609,7 +609,7 @@ spec:
   # ── Contract Testing (Microcks OPEN_API_SCHEMA) ───────────────────────────
   contractTesting:
     enabled: true
-    specURL: https://raw.githubusercontent.com/ihsenalaya/idp-preview/feat/preview-platform-v2/api/openapi.yaml
+    specURL: https://raw.githubusercontent.com/ihsenalaya/idp-preview/main/api/openapi.yaml
     importUsername: manager     # Microcks user with manager role (default: manager)
     # importPassword defaults to microcks123; override via MICROCKS_PASSWORD env
 
@@ -1365,10 +1365,10 @@ Cause: the CRD schema is missing a field that the controller writes to `status` 
 Fix: always apply the CRD **before** helm upgrade.
 
 ```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 1.0.21 \
   | tail -n +3 | kubectl apply -f -
 helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 0.13.8 --namespace preview-operator-system
+  --version 1.0.21 --namespace preview-operator-system
 ```
 
 ### Preview stuck in Provisioning
