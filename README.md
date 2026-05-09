@@ -344,9 +344,14 @@ az cognitiveservices account deployment create \
   --sku-name "GlobalStandard" \
   --sku-capacity 30
 
+# ⚠️  WSL/Windows : az CLI ajoute un \r en fin de valeur — toujours utiliser tr -d '\r\n'
 AOAI_KEY=$(az cognitiveservices account keys list \
   --name "preview-openai" --resource-group "<YOUR_RG>" \
-  --query "key1" -o tsv)
+  --query "key1" -o tsv | tr -d '\r\n')
+
+AOAI_ENDPOINT=$(az cognitiveservices account show \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "properties.endpoint" -o tsv | tr -d '\r\n')
 
 # Secret for kagent agents
 kubectl create secret generic kagent-openai \
@@ -357,33 +362,50 @@ kubectl create secret generic kagent-openai \
 kubectl create secret generic azure-openai-credentials \
   --namespace preview-operator-system \
   --from-literal=api-key="$AOAI_KEY"
+
+# Pull secret for private GHCR images (jaeger-mcp-server)
+GH_TOKEN=$(cat ~/.config/gh/hosts.yml | grep oauth_token | awk '{print $2}')
+kubectl create secret docker-registry ghcr-pull-secret \
+  --namespace kagent-system \
+  --docker-server=ghcr.io \
+  --docker-username="<YOUR_GITHUB_USERNAME>" \
+  --docker-password="$GH_TOKEN"
 ```
 
 #### Configure kagent ModelConfig for Azure OpenAI
 
 ```bash
-kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p '{
-  "spec": {
-    "provider": "AzureOpenAI",
-    "model": "gpt-4o-mini",
-    "apiKeySecret": "kagent-openai",
-    "apiKeySecretKey": "OPENAI_API_KEY",
-    "azureOpenAI": {
-      "azureEndpoint": "https://preview-openai-<ID>.openai.azure.com",
-      "azureDeployment": "gpt-4o-mini",
-      "apiVersion": "2024-10-21"
+# Récupérer l'endpoint exact depuis Azure (ne pas deviner le suffixe -<ID>)
+AOAI_ENDPOINT=$(az cognitiveservices account show \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "properties.endpoint" -o tsv | tr -d '\r\n')
+
+kubectl patch modelconfig default-model-config -n kagent-system --type=merge -p "{
+  \"spec\": {
+    \"provider\": \"AzureOpenAI\",
+    \"model\": \"gpt-4o-mini\",
+    \"apiKeySecret\": \"kagent-openai\",
+    \"apiKeySecretKey\": \"OPENAI_API_KEY\",
+    \"azureOpenAI\": {
+      \"azureEndpoint\": \"$AOAI_ENDPOINT\",
+      \"azureDeployment\": \"gpt-4o-mini\",
+      \"apiVersion\": \"2024-10-21\"
     }
   }
-}'
+}"
 ```
 
 #### Deploy the preview troubleshooter agent
 
 ```bash
 kubectl apply -f k8s/kagent/rbac-readonly.yaml
+kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
 kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
 
-# Verify
+# Attendre que jaeger-mcp-server soit Running avant de vérifier l'agent
+kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
+
+# L'agent doit être READY=True ACCEPTED=True — si ACCEPTED=False, jaeger-mcp-server n'est pas encore prêt
 kubectl get agent preview-troubleshooter-agent -n kagent-system
 ```
 
@@ -1589,6 +1611,8 @@ make microcks-contract-test
 # Apply kagent resources
 kubectl apply -f k8s/kagent/namespace.yaml
 kubectl apply -f k8s/kagent/rbac-readonly.yaml
+kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
+kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
 kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
 ```
 
