@@ -299,6 +299,7 @@ helm install microcks microcks/microcks \
   --set "microcks.ingressClassName=nginx" \
   --set "microcks.generateCert=false" \
   --set "keycloak.url=keycloak.${NODE_IP}.nip.io" \
+  --set "keycloak.privateUrl=http://microcks-keycloak.microcks.svc.cluster.local:8080" \
   --set "keycloak.ingressClassName=nginx" \
   --set "keycloak.generateCert=false"
 
