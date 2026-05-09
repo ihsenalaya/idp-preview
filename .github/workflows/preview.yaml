@@ -7,14 +7,14 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
-  CONTROLLER_GITHUB_TOKEN_SECRET: cellenza-github-token
+  CONTROLLER_GITHUB_TOKEN_SECRET: preview-github-token
   KANIKO_SECRET: ghcr-secret-${{ github.run_id }}
   KANIKO_JOB: kaniko-${{ github.run_id }}
 
 jobs:
   deploy:
     name: Build & Deploy Preview
-    runs-on: [self-hosted, kind]
+    runs-on: [self-hosted, aks]
     permissions:
       contents: read
       packages: write
@@ -37,14 +37,14 @@ jobs:
 
       - name: Create GHCR auth secret
         run: |
-          if [ -z '${{ secrets.CELLENZA_GITHUB_TOKEN }}' ]; then
-            echo "CELLENZA_GITHUB_TOKEN secret is required to push to GHCR" >&2
+          if [ -z '${{ secrets.PREVIEW_GITHUB_TOKEN }}' ]; then
+            echo "PREVIEW_GITHUB_TOKEN secret is required to push to GHCR" >&2
             exit 1
           fi
           kubectl create secret docker-registry "$KANIKO_SECRET" \
             --docker-server=ghcr.io \
             --docker-username='${{ github.actor }}' \
-            --docker-password='${{ secrets.CELLENZA_GITHUB_TOKEN }}' \
+            --docker-password='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
             --namespace=github-runner \
             --dry-run=client -o yaml | kubectl apply -f -
 
@@ -104,27 +104,27 @@ jobs:
               environment: `pr-${{ github.event.pull_request.number }}`,
               auto_merge: false,
               required_contexts: [],
-              description: "Cellenza preview environment"
+              description: "Preview environment"
             });
             return deployment.data.id;
 
       - name: Create controller GitHub token secret
         run: |
-          if [ -z '${{ secrets.CELLENZA_GITHUB_TOKEN }}' ]; then
-            echo "CELLENZA_GITHUB_TOKEN GitHub Actions secret is required" >&2
+          if [ -z '${{ secrets.PREVIEW_GITHUB_TOKEN }}' ]; then
+            echo "PREVIEW_GITHUB_TOKEN GitHub Actions secret is required" >&2
             exit 1
           fi
 
           kubectl create secret generic "$CONTROLLER_GITHUB_TOKEN_SECRET" \
-            --namespace=cellenza-operator-system \
-            --from-literal=token='${{ secrets.CELLENZA_GITHUB_TOKEN }}' \
+            --namespace=preview-operator-system \
+            --from-literal=token='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply Cellenza manifest
+      - name: Apply Preview manifest
         run: |
           kubectl apply -f - <<EOF
           apiVersion: platform.company.io/v1alpha1
-          kind: Cellenza
+          kind: Preview
           metadata:
             name: pr-${{ github.event.pull_request.number }}
           spec:
@@ -180,18 +180,18 @@ jobs:
               commentOnReady: true
               tokenSecretRef:
                 name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
-                namespace: cellenza-operator-system
+                namespace: preview-operator-system
                 key: token
           EOF
 
-      - name: Wait for Cellenza to be ready
+      - name: Wait for Preview to be ready
         run: |
           for i in $(seq 1 30); do
-            PHASE=$(kubectl get cellenza pr-${{ github.event.pull_request.number }} \
+            PHASE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            URL=$(kubectl get cellenza pr-${{ github.event.pull_request.number }} \
+            URL=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.url}' 2>/dev/null || echo "")
-            GITHUB_STATE=$(kubectl get cellenza pr-${{ github.event.pull_request.number }} \
+            GITHUB_STATE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.github.deploymentState}' 2>/dev/null || echo "")
             echo "Phase: ${PHASE} URL: ${URL} GitHub: ${GITHUB_STATE}"
             if [ "$PHASE" = "Running" ] && [ "$GITHUB_STATE" = "success" ]; then
@@ -199,13 +199,13 @@ jobs:
               exit 0
             fi
             if [ "$PHASE" = "Failed" ]; then
-              kubectl describe cellenza pr-${{ github.event.pull_request.number }}
+              kubectl describe preview pr-${{ github.event.pull_request.number }}
               exit 1
             fi
             sleep 10
           done
 
-          kubectl describe cellenza pr-${{ github.event.pull_request.number }} || true
+          kubectl describe preview pr-${{ github.event.pull_request.number }} || true
           exit 1
 
       - name: Cleanup Kaniko secret

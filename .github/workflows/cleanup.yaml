@@ -11,7 +11,7 @@ env:
 jobs:
   cleanup:
     name: Delete Preview
-    runs-on: [self-hosted, kind]
+    runs-on: [self-hosted, aks]
     permissions:
       contents: read
       deployments: write
@@ -31,24 +31,24 @@ jobs:
       - name: Refresh controller GitHub token secret
         run: |
           kubectl create secret generic "$GITHUB_TOKEN_SECRET" \
-            --namespace=cellenza-operator-system \
+            --namespace=preview-operator-system \
             --from-literal=token='${{ secrets.GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Delete Cellenza
+      - name: Delete Preview
         run: |
-          kubectl delete cellenza pr-${{ github.event.pull_request.number }} \
+          kubectl delete preview pr-${{ github.event.pull_request.number }} \
             --ignore-not-found
 
           for i in $(seq 1 30); do
-            if ! kubectl get cellenza pr-${{ github.event.pull_request.number }} >/dev/null 2>&1; then
+            if ! kubectl get preview pr-${{ github.event.pull_request.number }} >/dev/null 2>&1; then
               echo "Preview deleted"
               exit 0
             fi
             sleep 5
           done
 
-          kubectl describe cellenza pr-${{ github.event.pull_request.number }} || true
+          kubectl describe preview pr-${{ github.event.pull_request.number }} || true
           exit 1
 
       - name: Comment PR — environment deleted
@@ -63,4 +63,4 @@ jobs:
         if: always()
         run: |
           kubectl delete secret "$GITHUB_TOKEN_SECRET" \
-            --namespace=cellenza-operator-system --ignore-not-found
+            --namespace=preview-operator-system --ignore-not-found
