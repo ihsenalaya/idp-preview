@@ -99,10 +99,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: name and slug are required
+              example:
+                error: name and slug are required
         '500':
           $ref: '#/components/responses/InternalError'
   /api/products:
@@ -177,10 +175,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: name and price are required
+              example:
+                error: name and price are required
         '500':
           $ref: '#/components/responses/InternalError'
   /api/products/discounted:
@@ -342,10 +338,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: rating must be between 1 and 5
+              example:
+                error: rating must be between 1 and 5
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -388,30 +382,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: product_id and quantity >= 1 are required
+              example:
+                error: product_id and quantity >= 1 are required
         '404':
           description: Product not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: product not found
+              example:
+                error: product not found
         '409':
           description: Insufficient stock
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                Example_1:
-                  value:
-                    error: insufficient stock
+              example:
+                error: insufficient stock
         '500':
           $ref: '#/components/responses/InternalError'
     get:
@@ -486,20 +474,16 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-          examples:
-            Example_1:
-              value:
-                error: not found
+          example:
+            error: not found
     InternalError:
       description: Internal server error
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-          examples:
-            Example_1:
-              value:
-                error: connection refused
+          example:
+            error: connection refused
   schemas:
     Category:
       type: object
