@@ -1275,3 +1275,158 @@ helm repo update
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
 | Preview Extension | `preview-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
+| Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
+| kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
+
+---
+
+## 12. Contract-aware and agentic troubleshooting workflow
+
+> **KubeCon narrative:**
+> "Every pull request gets an isolated Kubernetes preview environment,
+> AI-generated test data, API contract validation with Microcks, automated
+> regression/E2E tests, and kagent-powered failure explanation."
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Developer — git push + gh pr create                                │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ pull_request: opened / synchronize
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  GitHub Actions (.github/workflows/preview.yaml)                    │
+│  Kaniko build → push image → apply Cellenza CR                     │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Cellenza Operator                                                  │
+│                                                                     │
+│  Namespace preview-pr-<N>                                          │
+│   ├── PostgreSQL + backend (svc-backend:8080) + frontend           │
+│   ├── AI enrichment: schema-dump → generate → seed → ai-tests     │
+│   ├── Test suite:  smoke → regression → E2E                        │
+│   └── [NEW] Microcks contract test  ◄─────────────────────────┐   │
+└──────────────────────────┬──────────────────────────────────────│───┘
+                           │                                       │
+         ┌─────────────────┼───────────────────────┐             │
+         │ PASS            │ FAIL                  │             │
+         ▼                 ▼                       │             │
+  PR comment ✅    kagent triggered 🤖            │             │
+                    │                              │             │
+                    ▼                              │             │
+         ┌──────────────────────────┐             │             │
+         │  preview-troubleshooter  │             │             │
+         │  -agent (read-only)      │             │             │
+         │                          │             │             │
+         │  Inspects:               │      ┌──────┘             │
+         │  - Preview CR status     │      │  Microcks          │
+         │  - Pod/job logs          │◄─────│  (in-cluster)      │
+         │  - Microcks job output   │      │  OPEN_API_SCHEMA   │
+         │  - Events                │      │  runner            │
+         └──────────┬───────────────┘      └────────────────────┘
+                    │
+                    ▼
+         Structured PR comment:
+         Risk level / Evidence /
+         Root cause / Suggested fix /
+         Reproduction commands
+```
+
+### What Microcks adds
+
+[Microcks](https://microcks.io) is an open-source API mocking and testing
+platform. In the Preview Platform it runs **OPEN_API_SCHEMA** validation:
+it sends real HTTP requests to the live backend (`svc-backend:8080`) and
+validates every response against `api/openapi.yaml`.
+
+- **Contract = single source of truth.** The OpenAPI file in the repo
+  defines what the API must return. Microcks enforces it on every PR.
+- **Catches schema drift early.** A field rename, wrong HTTP status code,
+  or missing required field is caught before code review — not by a
+  downstream consumer in production.
+- **Zero infrastructure for the developer.** Microcks runs in-cluster;
+  the Job is created and cleaned up automatically by the operator.
+
+### What kagent adds
+
+[kagent](https://kagent.dev) is a Kubernetes AI agent framework. The
+`preview-troubleshooter-agent` is a **read-only** agent that:
+
+- Is triggered automatically when any test suite (Microcks, regression, E2E) fails.
+- Reads Kubernetes resources, job logs, and events using a Kubernetes MCP
+  server — **no kubectl exec, no secret access, no mutations.**
+- Produces a structured Markdown GitHub PR comment with:
+  - Risk level (HIGH / MEDIUM / LOW / INFO)
+  - Evidence collected from the cluster
+  - Likely root cause
+  - Suggested fix with file and line references
+  - kubectl commands to reproduce the failure
+
+### Why kagent complements but does not replace the Preview Operator
+
+| Concern | Preview Operator | kagent |
+|---------|-----------------|--------|
+| Provision environments | ✅ | ❌ |
+| Run test pipelines | ✅ | ❌ |
+| Manage lifecycle (TTL, teardown) | ✅ | ❌ |
+| Diagnose failures | ❌ | ✅ |
+| Explain root cause in plain language | ❌ | ✅ |
+| Suggest code fixes | ❌ | ✅ |
+| Mutate cluster resources | ✅ (controlled) | ❌ (by design) |
+
+### How it fits the existing pipeline
+
+```
+Existing pipeline                       New additions
+─────────────────                       ──────────────
+1. AI enrichment (seed + tests)
+2. smoke-tests
+3. [NEW] microcks-contract-tests  ←── api/openapi.yaml validated
+4. suite-restore-regression
+5. regression-tests
+6. suite-restore-e2e
+7. e2e-tests
+
+On any failure → kagent ←─────────────── preview-troubleshooter-agent
+                                          reads logs from all above steps
+```
+
+### Manual commands
+
+```bash
+# Validate OpenAPI spec locally
+pip install pyyaml
+make validate-openapi
+
+# Validate all YAML files
+make validate-yaml
+
+# Run Microcks contract test manually
+export MICROCKS_URL=http://localhost:8080
+export BACKEND_URL=http://localhost:8080
+make microcks-contract-test
+
+# Apply kagent resources
+kubectl apply -f k8s/kagent/namespace.yaml
+kubectl apply -f k8s/kagent/rbac-readonly.yaml
+kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
+```
+
+### Required secrets
+
+| Secret | Namespace | Keys | Purpose |
+|--------|-----------|------|---------|
+| `microcks-credentials` | `preview-pr-<N>` | `client_id`, `client_secret` | Microcks OAuth2 (optional) |
+| `azure-openai-credentials` | `kagent-system` | `api-key` | Model provider for kagent |
+
+### Limitations
+
+| Limitation | Detail |
+|------------|--------|
+| Microcks must be pre-installed | Not installed by the operator chart — deploy separately |
+| OpenAPI spec must be imported in Microcks | Upload `api/openapi.yaml` once before first use |
+| kagent is read-only | Diagnosis only — cannot auto-fix failures |
+| kagent requires a model provider | Azure OpenAI, OpenAI, or any OpenAI-compatible API |
