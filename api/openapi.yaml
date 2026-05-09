@@ -2,429 +2,461 @@ openapi: 3.0.3
 info:
   title: Preview Catalog API
   version: 1.0.0
-  description: |
-    REST API for the Preview Platform demo application.
+  description: 'REST API for the Preview Platform demo application.
+
     Exposes a product catalogue with categories, reviews, orders and statistics.
+
     Used by Microcks for contract validation in every preview environment.
+
+    '
   contact:
     name: ihsenalaya
     url: https://github.com/ihsenalaya/idp-testing
-
 servers:
-  - url: http://svc-backend:8080
-    description: In-cluster backend (preview namespace)
-  - url: http://localhost:8080
-    description: Local development
-
+- url: http://svc-backend:8080
+  description: In-cluster backend (preview namespace)
+- url: http://localhost:8080
+  description: Local development
 paths:
-
   /healthz:
     get:
       operationId: healthCheck
       summary: Liveness probe
-      tags: [Health]
+      tags:
+      - Health
       responses:
-        "200":
+        '200':
           description: Service is alive
           content:
             text/plain:
               schema:
                 type: string
-                enum: [ok]
-              example: ok
-
+                enum:
+                - ok
+              examples:
+                Example_1:
+                  value: ok
   /api/categories:
     get:
       operationId: listCategories
       summary: List all categories with product count
-      tags: [Categories]
+      tags:
+      - Categories
       responses:
-        "200":
+        '200':
           description: Array of categories
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Category"
-              example:
-                - id: 1
-                  name: Electronics
-                  slug: electronics
-                  product_count: 5
-                - id: 2
-                  name: Clothing
-                  slug: clothing
-                  product_count: 3
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                  $ref: '#/components/schemas/Category'
+              examples:
+                Example_1:
+                  value:
+                  - id: 1
+                    name: Electronics
+                    slug: electronics
+                    product_count: 5
+                  - id: 2
+                    name: Clothing
+                    slug: clothing
+                    product_count: 3
+        '500':
+          $ref: '#/components/responses/InternalError'
     post:
       operationId: createCategory
       summary: Create a new category
-      tags: [Categories]
+      tags:
+      - Categories
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CategoryCreate"
-            example:
-              name: Electronics
-              slug: electronics
+              $ref: '#/components/schemas/CategoryCreate'
+            examples:
+              Example_1:
+                value:
+                  name: Electronics
+                  slug: electronics
       responses:
-        "201":
+        '201':
           description: Category created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CategoryCreated"
-              example:
-                id: 1
-                name: Electronics
-                slug: electronics
-        "400":
+                $ref: '#/components/schemas/CategoryCreated'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    name: Electronics
+                    slug: electronics
+        '400':
           description: Validation error — name and slug are required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: name and slug are required
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products:
     get:
       operationId: listProducts
       summary: List products (last 50, with average rating)
-      tags: [Products]
+      tags:
+      - Products
       responses:
-        "200":
+        '200':
           description: Array of products with ratings
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Product"
-              example:
-                - id: 1
-                  name: Wireless Headphones
-                  description: Premium noise-cancelling headphones
-                  price: 199.99
-                  stock: 12
-                  discount_pct: 10.0
-                  created_at: "2026-05-01T10:00:00+00:00"
-                  category_name: Electronics
-                  avg_rating: 4.5
-                  review_count: 6
-        "500":
-          $ref: "#/components/responses/InternalError"
-
-    post:
-      operationId: createProduct
-      summary: Create a new product
-      tags: [Products]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ProductCreate"
-            example:
-              name: Wireless Headphones
-              description: Premium noise-cancelling headphones
-              category_id: 1
-              price: 199.99
-              stock: 12
-              discount_pct: 10.0
-      responses:
-        "201":
-          description: Product created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProductCreated"
-              example:
-                id: 1
-                name: Wireless Headphones
-                price: 199.99
-                stock: 12
-                discount_pct: 10.0
-                created_at: "2026-05-01T10:00:00+00:00"
-        "400":
-          description: Validation error — name and price are required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: name and price are required
-        "500":
-          $ref: "#/components/responses/InternalError"
-
-  /api/products/discounted:
-    get:
-      operationId: listDiscountedProducts
-      summary: List products with a discount above the given threshold
-      tags: [Products]
-      parameters:
-        - name: min_discount
-          in: query
-          required: false
-          schema:
-            type: number
-            format: float
-            minimum: 0
-            maximum: 100
-            default: 0
-          description: Minimum discount percentage (0–100)
-          example: 10
-      responses:
-        "200":
-          description: Discounted products with effective price
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DiscountedProductList"
-              example:
-                count: 2
-                products:
+                  $ref: '#/components/schemas/Product'
+              examples:
+                Example_1:
+                  value:
                   - id: 1
                     name: Wireless Headphones
                     description: Premium noise-cancelling headphones
                     price: 199.99
                     stock: 12
                     discount_pct: 10.0
-                    discounted_price: 179.99
+                    created_at: '2026-05-01T10:00:00+00:00'
                     category_name: Electronics
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                    avg_rating: 4.5
+                    review_count: 6
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createProduct
+      summary: Create a new product
+      tags:
+      - Products
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+            examples:
+              Example_1:
+                value:
+                  name: Wireless Headphones
+                  description: Premium noise-cancelling headphones
+                  category_id: 1
+                  price: 199.99
+                  stock: 12
+                  discount_pct: 10.0
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductCreated'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    name: Wireless Headphones
+                    price: 199.99
+                    stock: 12
+                    discount_pct: 10.0
+                    created_at: '2026-05-01T10:00:00+00:00'
+        '400':
+          description: Validation error — name and price are required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: name and price are required
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/products/discounted:
+    get:
+      operationId: listDiscountedProducts
+      summary: List products with a discount above the given threshold
+      tags:
+      - Products
+      parameters:
+      - name: min_discount
+        in: query
+        required: false
+        schema:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          default: 0
+        description: Minimum discount percentage (0–100)
+        example: 10
+      responses:
+        '200':
+          description: Discounted products with effective price
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountedProductList'
+              examples:
+                Example_1:
+                  value:
+                    count: 2
+                    products:
+                    - id: 1
+                      name: Wireless Headphones
+                      description: Premium noise-cancelling headphones
+                      price: 199.99
+                      stock: 12
+                      discount_pct: 10.0
+                      discounted_price: 179.99
+                      category_name: Electronics
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}:
     get:
       operationId: getProduct
       summary: Get a product by ID with its reviews
-      tags: [Products]
+      tags:
+      - Products
       parameters:
-        - $ref: "#/components/parameters/ProductId"
+      - $ref: '#/components/parameters/ProductId'
       responses:
-        "200":
+        '200':
           description: Product with reviews
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ProductDetail"
-              example:
-                id: 1
-                name: Wireless Headphones
-                description: Premium noise-cancelling headphones
-                price: 199.99
-                stock: 12
-                discount_pct: 10.0
-                created_at: "2026-05-01T10:00:00+00:00"
-                category_name: Electronics
-                reviews:
-                  - id: 1
-                    author: alice
-                    rating: 5
-                    comment: Excellent product
-                    created_at: "2026-05-02T08:00:00+00:00"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                $ref: '#/components/schemas/ProductDetail'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    name: Wireless Headphones
+                    description: Premium noise-cancelling headphones
+                    price: 199.99
+                    stock: 12
+                    discount_pct: 10.0
+                    created_at: '2026-05-01T10:00:00+00:00'
+                    category_name: Electronics
+                    reviews:
+                    - id: 1
+                      author: alice
+                      rating: 5
+                      comment: Excellent product
+                      created_at: '2026-05-02T08:00:00+00:00'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     delete:
       operationId: deleteProduct
       summary: Delete a product
-      tags: [Products]
+      tags:
+      - Products
       parameters:
-        - $ref: "#/components/parameters/ProductId"
+      - $ref: '#/components/parameters/ProductId'
       responses:
-        "204":
+        '204':
           description: Product deleted (no body)
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}/reviews:
     get:
       operationId: listProductReviews
       summary: List reviews for a product
-      tags: [Reviews]
+      tags:
+      - Reviews
       parameters:
-        - $ref: "#/components/parameters/ProductId"
+      - $ref: '#/components/parameters/ProductId'
       responses:
-        "200":
+        '200':
           description: Array of reviews
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Review"
-              example:
-                - id: 1
-                  author: alice
-                  rating: 5
-                  comment: Excellent product
-                  created_at: "2026-05-02T08:00:00+00:00"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                  $ref: '#/components/schemas/Review'
+              examples:
+                Example_1:
+                  value:
+                  - id: 1
+                    author: alice
+                    rating: 5
+                    comment: Excellent product
+                    created_at: '2026-05-02T08:00:00+00:00'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     post:
       operationId: createProductReview
       summary: Submit a review for a product
-      tags: [Reviews]
+      tags:
+      - Reviews
       parameters:
-        - $ref: "#/components/parameters/ProductId"
+      - $ref: '#/components/parameters/ProductId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReviewCreate"
-            example:
-              author: alice
-              rating: 5
-              comment: Excellent product
+              $ref: '#/components/schemas/ReviewCreate'
+            examples:
+              Example_1:
+                value:
+                  author: alice
+                  rating: 5
+                  comment: Excellent product
       responses:
-        "201":
+        '201':
           description: Review created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Review"
-              example:
-                id: 1
-                author: alice
-                rating: 5
-                comment: Excellent product
-                created_at: "2026-05-02T08:00:00+00:00"
-        "400":
+                $ref: '#/components/schemas/Review'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    author: alice
+                    rating: 5
+                    comment: Excellent product
+                    created_at: '2026-05-02T08:00:00+00:00'
+        '400':
           description: Validation error — rating must be between 1 and 5
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: rating must be between 1 and 5
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/orders:
     post:
       operationId: createOrder
       summary: Place an order for a product
-      tags: [Orders]
+      tags:
+      - Orders
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/OrderCreate"
-            example:
-              product_id: 1
-              quantity: 2
+              $ref: '#/components/schemas/OrderCreate'
+            examples:
+              Example_1:
+                value:
+                  product_id: 1
+                  quantity: 2
       responses:
-        "201":
+        '201':
           description: Order placed — stock is decremented atomically
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrderResponse"
-              example:
-                id: 1
-                product_id: 1
-                quantity: 2
-                status: pending
-                created_at: "2026-05-01T11:00:00+00:00"
-        "400":
+                $ref: '#/components/schemas/OrderResponse'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    product_id: 1
+                    quantity: 2
+                    status: pending
+                    created_at: '2026-05-01T11:00:00+00:00'
+        '400':
           description: Validation error — product_id and quantity >= 1 are required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: product_id and quantity >= 1 are required
-        "404":
+        '404':
           description: Product not found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: product not found
-        "409":
+        '409':
           description: Insufficient stock
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: insufficient stock
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+        '500':
+          $ref: '#/components/responses/InternalError'
     get:
       operationId: listOrders
       summary: List the last 50 orders
-      tags: [Orders]
+      tags:
+      - Orders
       responses:
-        "200":
+        '200':
           description: Array of orders
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Order"
-              example:
-                - id: 1
-                  product_id: 1
-                  product_name: Wireless Headphones
-                  quantity: 2
-                  status: pending
-                  created_at: "2026-05-01T11:00:00+00:00"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                  $ref: '#/components/schemas/Order'
+              examples:
+                Example_1:
+                  value:
+                  - id: 1
+                    product_id: 1
+                    product_name: Wireless Headphones
+                    quantity: 2
+                    status: pending
+                    created_at: '2026-05-01T11:00:00+00:00'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/stats:
     get:
       operationId: getStats
       summary: Aggregated platform statistics
-      tags: [Stats]
+      tags:
+      - Stats
       responses:
-        "200":
+        '200':
           description: Platform statistics
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Stats"
-              example:
-                total_products: 10
-                total_categories: 3
-                total_reviews: 20
-                total_orders: 5
-                out_of_stock: 1
-                low_stock: 2
-                avg_rating: 4.2
-                categories:
-                  - Electronics
-                  - Clothing
-                  - Books
-        "500":
-          $ref: "#/components/responses/InternalError"
-
+                $ref: '#/components/schemas/Stats'
+              examples:
+                Example_1:
+                  value:
+                    total_products: 10
+                    total_categories: 3
+                    total_reviews: 20
+                    total_orders: 5
+                    out_of_stock: 1
+                    low_stock: 2
+                    avg_rating: 4.2
+                    categories:
+                    - Electronics
+                    - Clothing
+                    - Books
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
-
   parameters:
     ProductId:
       name: id
@@ -435,14 +467,13 @@ components:
         minimum: 1
       description: Product identifier
       example: 1
-
   responses:
     NotFound:
       description: Resource not found
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: '#/components/schemas/ErrorResponse'
           example:
             error: not found
     InternalError:
@@ -450,15 +481,17 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: '#/components/schemas/ErrorResponse'
           example:
             error: connection refused
-
   schemas:
-
     Category:
       type: object
-      required: [id, name, slug, product_count]
+      required:
+      - id
+      - name
+      - slug
+      - product_count
       properties:
         id:
           type: integer
@@ -474,10 +507,11 @@ components:
         product_count:
           type: integer
           minimum: 0
-
     CategoryCreate:
       type: object
-      required: [name, slug]
+      required:
+      - name
+      - slug
       properties:
         name:
           type: string
@@ -487,10 +521,12 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-
     CategoryCreated:
       type: object
-      required: [id, name, slug]
+      required:
+      - id
+      - name
+      - slug
       properties:
         id:
           type: integer
@@ -499,10 +535,15 @@ components:
           type: string
         slug:
           type: string
-
     Product:
       type: object
-      required: [id, name, price, stock, discount_pct, created_at]
+      required:
+      - id
+      - name
+      - price
+      - stock
+      - discount_pct
+      - created_at
       properties:
         id:
           type: integer
@@ -540,10 +581,11 @@ components:
         review_count:
           type: integer
           minimum: 0
-
     ProductCreate:
       type: object
-      required: [name, price]
+      required:
+      - name
+      - price
       properties:
         name:
           type: string
@@ -570,10 +612,15 @@ components:
           minimum: 0
           maximum: 100
           default: 0
-
     ProductCreated:
       type: object
-      required: [id, name, price, stock, discount_pct, created_at]
+      required:
+      - id
+      - name
+      - price
+      - stock
+      - discount_pct
+      - created_at
       properties:
         id:
           type: integer
@@ -591,10 +638,16 @@ components:
         created_at:
           type: string
           format: date-time
-
     ProductDetail:
       type: object
-      required: [id, name, price, stock, discount_pct, created_at, reviews]
+      required:
+      - id
+      - name
+      - price
+      - stock
+      - discount_pct
+      - created_at
+      - reviews
       properties:
         id:
           type: integer
@@ -621,11 +674,12 @@ components:
         reviews:
           type: array
           items:
-            $ref: "#/components/schemas/Review"
-
+            $ref: '#/components/schemas/Review'
     DiscountedProductList:
       type: object
-      required: [count, products]
+      required:
+      - count
+      - products
       properties:
         count:
           type: integer
@@ -633,11 +687,16 @@ components:
         products:
           type: array
           items:
-            $ref: "#/components/schemas/DiscountedProduct"
-
+            $ref: '#/components/schemas/DiscountedProduct'
     DiscountedProduct:
       type: object
-      required: [id, name, price, stock, discount_pct, discounted_price]
+      required:
+      - id
+      - name
+      - price
+      - stock
+      - discount_pct
+      - discounted_price
       properties:
         id:
           type: integer
@@ -662,10 +721,13 @@ components:
         category_name:
           type: string
           nullable: true
-
     Review:
       type: object
-      required: [id, author, rating, created_at]
+      required:
+      - id
+      - author
+      - rating
+      - created_at
       properties:
         id:
           type: integer
@@ -682,10 +744,10 @@ components:
         created_at:
           type: string
           format: date-time
-
     ReviewCreate:
       type: object
-      required: [rating]
+      required:
+      - rating
       properties:
         author:
           type: string
@@ -699,10 +761,10 @@ components:
           type: string
           maxLength: 500
           nullable: true
-
     OrderCreate:
       type: object
-      required: [product_id]
+      required:
+      - product_id
       properties:
         product_id:
           type: integer
@@ -711,10 +773,14 @@ components:
           type: integer
           minimum: 1
           default: 1
-
     OrderResponse:
       type: object
-      required: [id, product_id, quantity, status, created_at]
+      required:
+      - id
+      - product_id
+      - quantity
+      - status
+      - created_at
       properties:
         id:
           type: integer
@@ -727,14 +793,22 @@ components:
           minimum: 1
         status:
           type: string
-          enum: [pending, confirmed, shipped, cancelled]
+          enum:
+          - pending
+          - confirmed
+          - shipped
+          - cancelled
         created_at:
           type: string
           format: date-time
-
     Order:
       type: object
-      required: [id, product_id, quantity, status, created_at]
+      required:
+      - id
+      - product_id
+      - quantity
+      - status
+      - created_at
       properties:
         id:
           type: integer
@@ -753,11 +827,16 @@ components:
         created_at:
           type: string
           format: date-time
-
     Stats:
       type: object
-      required: [total_products, total_categories, total_reviews, total_orders,
-                 out_of_stock, low_stock, categories]
+      required:
+      - total_products
+      - total_categories
+      - total_reviews
+      - total_orders
+      - out_of_stock
+      - low_stock
+      - categories
       properties:
         total_products:
           type: integer
@@ -787,25 +866,24 @@ components:
           type: array
           items:
             type: string
-
     ErrorResponse:
       type: object
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: string
           minLength: 1
-
 tags:
-  - name: Health
-    description: Liveness and readiness probes
-  - name: Categories
-    description: Product category management
-  - name: Products
-    description: Product catalogue
-  - name: Reviews
-    description: Product reviews
-  - name: Orders
-    description: Order placement
-  - name: Stats
-    description: Aggregated platform statistics
+- name: Health
+  description: Liveness and readiness probes
+- name: Categories
+  description: Product category management
+- name: Products
+  description: Product catalogue
+- name: Reviews
+  description: Product reviews
+- name: Orders
+  description: Order placement
+- name: Stats
+  description: Aggregated platform statistics

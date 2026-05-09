@@ -161,6 +161,12 @@ jobs:
             testSuite:
               enabled: true
               smoke: {}
+              contractTesting:
+                enabled: true
+                microcksURL: http://microcks.microcks.svc.cluster.local:8080
+                apiName: Preview Catalog API
+                apiVersion: "1.0.0"
+                specURL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.head_ref }}/api/openapi.yaml
               regression:
                 enabled: true
               e2e:
@@ -171,6 +177,10 @@ jobs:
                 name: ai-api-key
                 key: api-key
               model: gpt-4o-mini
+            kagent:
+              enabled: true
+              namespace: kagent-system
+              agentName: preview-troubleshooter-agent
             github:
               enabled: true
               owner: ${{ github.repository_owner }}

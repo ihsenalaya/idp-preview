@@ -44,18 +44,18 @@ spec:
           image: myoung34/github-runner:latest
           env:
             - name: REPO_URL
-              value: https://github.com/ihsenalaya/idp-testing
-            - name: RUNNER_TOKEN
+              value: https://github.com/ihsenalaya/idp-preview
+            - name: ACCESS_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: runner-token
                   key: token
             - name: RUNNER_NAME
-              value: kind-cluster-runner
+              value: aks-runner
             - name: RUNNER_WORKDIR
               value: /tmp/runner
             - name: LABELS
-              value: self-hosted,kind
+              value: self-hosted,aks
             - name: EPHEMERAL
               value: "false"
           resources:
@@ -65,10 +65,3 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
-          volumeMounts:
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
-      volumes:
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock

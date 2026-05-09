@@ -56,7 +56,7 @@ Demo application and reference implementation for the **Preview Operator** — a
 │    ├── Run Migration Job     (optional — if spec.database.migration)           │
 │    ├── Run Seed Job          (optional — if spec.database.seed)                │
 │    ├── Deploy Services       svc-backend (app.py:8080) + svc-frontend (3000)  │
-│    ├── Create Ingress        /api → backend   / → frontend                    │
+│    ├── Expose               VirtualService (Istio) or Nginx Ingress (auto-detected)│
 │    ├── Inject OTel           annotation → sidecar injected by OTel operator    │
 │    └── Post GitHub comment   "🔄 Provisioning en cours…"                      │
 │                                                                                 │
@@ -73,10 +73,12 @@ Demo application and reference implementation for the **Preview Operator** — a
 │    └── [TEST SUITE — starts only after AI enrichment Succeeded or Failed]     │
 │          step 1: suite-checkpoint-save     ──► pg_dump → ConfigMap            │
 │          step 2: smoke-tests               ──► /healthz + /api/products       │
-│          step 3: suite-restore-regression  ──► TRUNCATE + psql replay         │
-│          step 4: regression-tests          ──► tests/regression.py            │
-│          step 5: suite-restore-e2e         ──► TRUNCATE + psql replay         │
-│          step 6: e2e-tests (Playwright)    ──► tests/e2e.py                   │
+│          step 3: microcks-import           ──► upload openapi.yaml (non-blocking)│
+│          step 4: microcks-contract-tests   ──► OPEN_API_SCHEMA validation     │
+│          step 5: suite-restore-regression  ──► TRUNCATE + psql replay         │
+│          step 6: regression-tests          ──► tests/regression.py            │
+│          step 7: suite-restore-e2e         ──► TRUNCATE + psql replay         │
+│          step 8: e2e-tests (Playwright)    ──► tests/e2e.py                   │
 │                                                                                 │
 │  PHASE: Terminating                                                             │
 │    ├── Delete all namespace resources                                          │
@@ -112,7 +114,7 @@ cluster
 │     ├── svc-backend  (app.py:8080)   │  isolated namespace
 │     ├── svc-frontend (frontend:3000) │  one per open PR
 │     ├── postgres                     │
-│     ├── Ingress (pr-1.preview.*)     │
+│     ├── VirtualService/Ingress        │  pr-1.preview.ihsenalaya.xyz
 │     └── Jobs (test/AI/restore…)      ┘
 │
 ├── preview-pr-2/                      ┐
@@ -172,11 +174,11 @@ kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
 kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=120s
 ```
 
-### Step 3 — Install ingress-nginx
+### Step 3 — Install ingress-nginx (fallback without Istio)
 
-> Do **not** pin a version — older releases are removed from the repo index over time.
+> Skip this step if you are using Istio (Step 3b). The operator auto-detects which is available.
 
-**Important:** disable admission webhooks. In Kind, the webhook certificate is self-signed and not trusted by the API server, which causes any Ingress creation to fail with `x509: certificate signed by unknown authority`.
+**Important:** disable admission webhooks in Kind clusters (webhook cert is self-signed):
 
 ```bash
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
@@ -188,18 +190,55 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 ```
 
-If already installed without this flag:
+### Step 3b — Install Istio (recommended for production / AKS)
+
+Istio provides public URLs without port-forwarding via a shared wildcard DNS entry.
 
 ```bash
-helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --set controller.admissionWebhooks.enabled=false \
-  --wait
+# Download istioctl
+curl -sL "https://github.com/istio/istio/releases/download/1.23.0/istioctl-1.23.0-linux-amd64.tar.gz" \
+  | tar -xz -C /usr/local/bin
 
-kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
+# Install Istio with ingress gateway
+istioctl install --set profile=minimal \
+  --set components.ingressGateways[0].enabled=true \
+  --set components.ingressGateways[0].name=istio-ingressgateway \
+  -y
+
+# Get the gateway external IP (wait until assigned)
+kubectl get svc istio-ingressgateway -n istio-system
+ISTIO_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Create wildcard DNS record in Azure DNS
+az network dns record-set a add-record \
+  --zone-name <YOUR_ZONE>   \
+  --resource-group <YOUR_RG> \
+  --record-set-name "*.preview" \
+  --ipv4-address "$ISTIO_IP" \
+  --ttl 300
+
+# Create the shared gateway (one per cluster)
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: preview-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*.preview.<YOUR_ZONE>"
+EOF
 ```
 
-> **WSL2:** preview URLs are reachable at `http://pr-<N>.preview.localtest.me:8080` via port-forward (see [Accessing the Preview](#accessing-the-preview)).
+Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4).
 
 ### Step 4 — Install the Preview Operator
 
@@ -218,7 +257,8 @@ kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
 helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
-  --set image.tag=1.0.1 \
+  --set image.tag=1.0.19 \
+  --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=https://<YOUR_AOAI_RESOURCE>.openai.azure.com/openai/deployments/gpt-4o-mini"
 
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
@@ -375,91 +415,23 @@ kubectl get instrumentation -n observability
 
 ### Step 7 — Deploy the self-hosted GitHub Actions runner
 
-#### 7.1 Generate a runner registration token
+The runner uses a **long-lived GitHub PAT** (`ACCESS_TOKEN`) rather than a one-time registration token. The `myoung34/github-runner` image automatically exchanges the PAT for a fresh registration token on every pod start — no manual renewal needed.
 
-> Tokens expire after **1 hour**. Regenerate whenever the runner pod restarts.
+#### 7.1 Create the runner PAT secret
+
+The PAT must have `repo` scope (for registration) and `write:packages` (for Kaniko to push to GHCR).
 
 ```bash
-gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token'
+kubectl create namespace github-runner --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic runner-token \
+  --namespace github-runner \
+  --from-literal=token="<YOUR_GITHUB_PAT>"
 ```
 
 #### 7.2 Apply runner.yaml
 
-Replace `<YOUR_OWNER>`, `<YOUR_REPO>`, `<TOKEN>`:
-
-```yaml
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: github-runner
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: github-runner
-  namespace: github-runner
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: github-runner-admin
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-  - kind: ServiceAccount
-    name: github-runner
-    namespace: github-runner
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: github-runner
-  namespace: github-runner
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: github-runner
-  template:
-    metadata:
-      labels:
-        app: github-runner
-    spec:
-      serviceAccountName: github-runner
-      containers:
-        - name: runner
-          image: myoung34/github-runner:latest
-          env:
-            - name: REPO_URL
-              value: https://github.com/<YOUR_OWNER>/<YOUR_REPO>
-            - name: RUNNER_TOKEN
-              value: <TOKEN>
-            - name: RUNNER_NAME
-              value: kind-cluster-runner
-            - name: RUNNER_WORKDIR
-              value: /tmp/runner
-            - name: LABELS
-              value: self-hosted,kind
-            - name: EPHEMERAL
-              value: "false"
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 1000m
-              memory: 1Gi
-          volumeMounts:
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
-      volumes:
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock
-```
+`runner.yaml` is already configured in this repo. Apply it directly:
 
 ```bash
 kubectl apply -f runner.yaml
@@ -468,7 +440,26 @@ kubectl logs -n github-runner deployment/github-runner --tail=5
 # Expected last line: "Listening for Jobs"
 ```
 
-> **Note:** `myoung34/github-runner:latest` is ~1 GB. The first pull can take several minutes inside Kind.
+The relevant configuration inside `runner.yaml`:
+
+```yaml
+env:
+  - name: REPO_URL
+    value: https://github.com/ihsenalaya/idp-preview
+  - name: ACCESS_TOKEN          # long-lived PAT — auto-renews registration on restart
+    valueFrom:
+      secretKeyRef:
+        name: runner-token
+        key: token
+  - name: RUNNER_NAME
+    value: aks-runner
+  - name: LABELS
+    value: self-hosted,aks      # matches runs-on: [self-hosted, aks] in preview.yaml
+  - name: EPHEMERAL
+    value: "false"
+```
+
+> **No docker socket needed.** The workflow uses Kaniko (in-cluster image build), not Docker-in-Docker.
 
 #### 7.3 Set the GitHub Actions secret
 
@@ -478,17 +469,17 @@ gh secret set PREVIEW_GITHUB_TOKEN \
   --body "<YOUR_GITHUB_PAT>"
 ```
 
-Minimum token permissions:
+Minimum PAT permissions:
 
-| Permission | Level |
-|---|---|
-| `write:packages` | Required — Kaniko pushes to GHCR |
-| `Contents` | read |
-| `Pull requests` | read |
-| `Issues` | write |
-| `Deployments` | write |
+| Permission | Level | Purpose |
+|---|---|---|
+| `write:packages` | Required | Kaniko pushes to GHCR |
+| `repo` (Contents) | read | Kaniko clones repo, spec import fetches openapi.yaml |
+| `Pull requests` | write | Operator posts PR comments |
+| `Issues` | write | |
+| `Deployments` | write | Operator creates GitHub Deployments |
 
-#### 7.4 Create the operator secret
+#### 7.4 Create the operator GitHub token secret
 
 ```bash
 kubectl create secret generic preview-github-token \
@@ -496,7 +487,27 @@ kubectl create secret generic preview-github-token \
   --from-literal=token="<YOUR_GITHUB_PAT>"
 ```
 
-#### 7.5 Configure AI enrichment (optional)
+#### 7.5 Configure AI enrichment
+
+**Azure OpenAI (used in this setup)**
+
+```bash
+AOAI_KEY=$(az cognitiveservices account keys list \
+  --name "preview-openai" --resource-group "<YOUR_RG>" \
+  --query "key1" -o tsv)
+
+kubectl create secret generic ai-api-key \
+  --namespace preview-operator-system \
+  --from-literal=api-key="$AOAI_KEY"
+```
+
+**OpenAI**
+
+```bash
+kubectl create secret generic ai-api-key \
+  --namespace preview-operator-system \
+  --from-literal=api-key="sk-..."
+```
 
 **GitHub Models (free tier)**
 
@@ -508,25 +519,6 @@ kubectl create secret generic ai-api-key \
 kubectl set env deployment/preview-operator \
   AI_API_URL=https://models.inference.ai.azure.com \
   -n preview-operator-system
-```
-
-**OpenAI**
-
-```bash
-kubectl create secret generic ai-api-key \
-  --namespace preview-operator-system \
-  --from-literal=api-key="sk-..."
-# No AI_API_URL override needed — the operator default is https://api.openai.com/v1
-```
-
-#### Renew runner token (when token expires)
-
-```bash
-NEW_TOKEN=$(gh api -X POST repos/<OWNER>/<REPO>/actions/runners/registration-token --jq '.token')
-kubectl set env deployment/github-runner -n github-runner RUNNER_TOKEN="$NEW_TOKEN"
-kubectl rollout restart deployment/github-runner -n github-runner
-kubectl logs -n github-runner deployment/github-runner --tail=5
-# Expected: "Listening for Jobs"
 ```
 
 ---
@@ -614,6 +606,19 @@ spec:
       enabled: true             # generates + runs test.py
     # rerunRequested: true      # set by @preview retest-ai — triggers AI-only rerun
 
+  # ── Contract Testing (Microcks OPEN_API_SCHEMA) ───────────────────────────
+  contractTesting:
+    enabled: true
+    specURL: https://raw.githubusercontent.com/ihsenalaya/idp-preview/feat/preview-platform-v2/api/openapi.yaml
+    importUsername: manager     # Microcks user with manager role (default: manager)
+    # importPassword defaults to microcks123; override via MICROCKS_PASSWORD env
+
+  # ── kagent — AI failure analysis ───────────────────────────────────────────
+  kagent:
+    enabled: true
+    agentName: preview-troubleshooter-agent
+    agentNamespace: kagent-system
+
   # ── GitHub integration ─────────────────────────────────────────────────────
   github:
     enabled: true
@@ -692,7 +697,7 @@ Reconcile(ctx, req)
      │
      ├── 9. reconcileServices()      ──► one Deployment + Service per spec.services[]
      │
-     ├── 10. reconcileIngress()      ──► nginx Ingress, path rules from pathPrefix
+     ├── 10. reconcileExposure()     ──► VirtualService (Istio) or Nginx Ingress (auto-detected)
      │
      ├── 11. reconcileTelemetry()    ──► inject OTel annotation on pods
      │
@@ -704,6 +709,9 @@ Reconcile(ctx, req)
      │         └── see §7 for full detail
      │
      └── 15. reconcileTestSuite()    ──► (if enabled AND AI done or disabled)
+               ├── saving → smoke → import-spec → contract
+               ├── restore-regression → regression
+               ├── restore-e2e → e2e
                └── see §6 for full detail
 ```
 
@@ -727,6 +735,8 @@ The controller never runs long operations inline — it delegates every side-eff
 │  ── Test Suite ─────────────┼───────────────┼──────────────────────────────│
 │  suite-checkpoint-save     │ postgres:15   │ pg_dump --data-only → ConfigMap│
 │  smoke-tests               │ python:3.11   │ embedded smoke script          │
+│  microcks-import           │ python:3.11   │ upload openapi.yaml to Microcks│
+│  microcks-contract-tests   │ python:3.11   │ OPEN_API_SCHEMA validation     │
 │  suite-restore-regression  │ postgres:15   │ TRUNCATE + psql replay         │
 │  regression-tests          │ app image     │ tests/regression.py            │
 │  suite-restore-e2e         │ postgres:15   │ TRUNCATE + psql replay         │
@@ -745,7 +755,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 ```json
 {
   "phase": "Running",
-  "url": "http://pr-42.preview.localtest.me:8080",
+  "url": "http://pr-42.preview.ihsenalaya.xyz",
   "namespaceName": "preview-pr-42",
   "readyAt": "2026-05-08T09:00:00Z",
   "expiresAt": "2026-05-10T09:00:00Z",
@@ -773,7 +783,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
     "deploymentState": "success",
     "lastNotifiedPhase": "Running",
     "commentId": 987654321,
-    "lastEnvironmentUrl": "http://pr-42.preview.localtest.me:8080"
+    "lastEnvironmentUrl": "http://pr-42.preview.ihsenalaya.xyz"
   }
 }
 ```
@@ -795,7 +805,7 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 # Quick overview
 kubectl get preview
 # NAME    PHASE     BRANCH            TIER     URL                                    EXPIRES                AGE
-# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.localtest.me…    2026-05-10T09:00:00Z   2h
+# pr-42   Running   feature/my-feat   medium   http://pr-42.preview.ihsenalaya.xyz   2026-05-10T09:00:00Z   2h
 
 # Current pipeline step
 kubectl get preview pr-42 -o jsonpath='{.status.tests.step}'
@@ -841,6 +851,26 @@ The Preview controller solves both by giving each PR its own namespace + databas
                     │  Tests:                                               │
                     │    PASS smoke /healthz: 200                          │
                     │    PASS smoke /api/products: 200                     │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: microcks-import  (non-blocking)                 │
+                    │  Image: python:3.11                                   │
+                    │  Fetches openapi.yaml from SPEC_URL (GitHub raw)     │
+                    │  Uploads to Microcks /api/artifact/upload            │
+                    │  Uses Keycloak password grant (manager role)         │
+                    │  Failure does NOT stop the pipeline                  │
+                    └────────────────┬─────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────────────────────┐
+                    │  Job: microcks-contract-tests                         │
+                    │  Image: python:3.11                                   │
+                    │  Runner: OPEN_API_SCHEMA                             │
+                    │  BACKEND_URL=http://svc-backend.preview-pr-<N>       │
+                    │            .svc.cluster.local:8080  (full FQDN)     │
+                    │  Validates every 2xx response against openapi.yaml   │
+                    │  Results posted to PR comment                        │
+                    │  On failure → kagent triggered for AI analysis       │
                     └────────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
@@ -923,13 +953,15 @@ The controller stores the current pipeline step in `status.tests.step`. Each rec
 ```
 Reconcile() → reads status.tests.step
   ""                   → set step="saving", create pg_dump job
-  "saving"             → pg_dump job complete? → set step="smoke"
-  "smoke"              → smoke job complete?   → set step="restore-regression"
-  "restore-regression" → restore complete?     → set step="regression"
-  "regression"         → regression complete?  → set step="restore-e2e"
-  "restore-e2e"        → restore complete?     → set step="e2e"
-  "e2e"                → e2e complete?         → set tests.phase="Succeeded"
-                          job still running    → RequeueAfter=10s
+  "saving"             → pg_dump job complete?    → set step="smoke"
+  "smoke"              → smoke job complete?      → set step="import-spec"
+  "import-spec"        → import job done/failed?  → set step="contract"
+  "contract"           → contract job complete?   → set step="restore-regression"
+  "restore-regression" → restore complete?        → set step="regression"
+  "regression"         → regression complete?     → set step="restore-e2e"
+  "restore-e2e"        → restore complete?        → set step="e2e"
+  "e2e"                → e2e complete?            → set tests.phase="Succeeded"
+                          job still running       → RequeueAfter=10s
 ```
 
 If a job is running, the controller returns `RequeueAfter=10s` and exits — it does not block the goroutine. The next reconcile checks job status again. This loop continues until the job finishes or fails.
@@ -1144,19 +1176,28 @@ kubectl get preview pr-42 -o jsonpath='{.status.github.lastError}'
 
 ### Accessing the preview
 
+**With Istio (AKS / production)** — no port-forward needed:
+
 ```bash
-# Port-forward ingress (required for Kind)
+# URL is printed in the PR comment and in status:
+http://pr-<N>.preview.ihsenalaya.xyz
+
+kubectl get preview pr-<N> -o jsonpath='{.status.url}'
+```
+
+**With ingress-nginx (Kind / local)** — port-forward required:
+
+```bash
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
+# Then: http://pr-<N>.preview.localtest.me:8080
+```
 
-# Preview URL printed in the PR comment:
-http://pr-<NUMBER>.preview.localtest.me:8080
+**Jaeger traces:**
 
-# Jaeger traces
+```bash
 kubectl port-forward -n observability svc/jaeger 16686:16686
 # Open http://localhost:16686 → service: idp-preview-pr-42
 ```
-
-> **WSL2:** run the port-forward inside WSL2. Windows browsers reach `localhost:8080` via WSL2 localhost forwarding.
 
 ---
 
@@ -1382,12 +1423,13 @@ helm repo update
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
-| Preview Operator | `preview-operator-system` | **0.13.8** | Multi-service, sequential test pipeline, AI enrichment, checkpoint restore |
+| Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
+| Preview Operator | `preview-operator-system` | **1.0.19** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **0.13.8** | Copilot commands + checkpoint API |
+| Preview Extension | `preview-operator-system` | **1.0.12** | Copilot commands + checkpoint API |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
 | kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
 
@@ -1405,9 +1447,9 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | 1.0.1 | Provisions and orchestrates preview environments |
-| idp-preview (this app) | 1.0.1 | Sample Flask REST API + frontend |
-| Microcks | 1.14.0 | OpenAPI contract testing |
+| preview-operator | **1.0.19** | Provisions and orchestrates preview environments |
+| idp-preview (this app) | latest | Sample Flask REST API + frontend |
+| Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
 | CRD | `previews.platform.company.io/v1alpha1` | Preview CR |
 
@@ -1426,37 +1468,47 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.1                                             │
+│  Preview Operator 1.0.19                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
 │   ├── AI enrichment: schema-dump → generate → seed → ai-tests     │
-│   ├── Test suite:  smoke → contract (Microcks) → regression → E2E  │
-│   └── Microcks contract test  ◄───────────────────────────────┐   │
-└──────────────────────────┬──────────────────────────────────────│───┘
-                           │                                       │
-         ┌─────────────────┼───────────────────────┐             │
-         │ PASS            │ FAIL                  │             │
-         ▼                 ▼                       │             │
-  PR comment ✅    kagent triggered 🤖            │             │
-                    │                              │             │
-                    ▼                              │             │
-         ┌──────────────────────────┐             │             │
-         │  preview-troubleshooter  │             │             │
-         │  -agent (read-only)      │             │             │
-         │                          │             │             │
-         │  Inspects:               │      ┌──────┘             │
-         │  - Preview CR status     │      │  Microcks          │
-         │  - Pod/job logs          │◄─────│  (in-cluster)      │
-         │  - Microcks job output   │      │  OPEN_API_SCHEMA   │
-         │  - Events                │      │  runner            │
-         └──────────┬───────────────┘      └────────────────────┘
-                    │
-                    ▼
-         Structured PR comment:
-         Risk level / Evidence /
-         Root cause / Suggested fix /
-         Reproduction commands
+│   └── Test suite:                                                  │
+│         smoke → microcks-import → contract → regression → E2E      │
+│                       │                │                           │
+│         ┌─────────────┘               │                           │
+│         │  openapi.yaml uploaded       │                           │
+│         │  to Microcks                 │                           │
+│         ▼                              │                           │
+│  ┌──────────────────┐                 │                           │
+│  │  Microcks        │◄────────────────┘                           │
+│  │  (microcks ns)   │  OPEN_API_SCHEMA runner                     │
+│  │  HTTP requests → │  svc-backend.<ns>.svc.cluster.local:8080    │
+│  │  svc-backend     │  validates responses vs openapi.yaml         │
+│  └──────┬───────────┘                                             │
+└─────────│───────────────────────────────────────────────────────────┘
+          │
+          ├─── PASS ──► PR comment ✅ (contract: N passed)
+          │
+          └─── FAIL ──► kagent triggered 🤖
+                              │
+                              ▼
+                   ┌──────────────────────────┐
+                   │  preview-troubleshooter  │
+                   │  -agent (read-only)       │
+                   │                          │
+                   │  Inspects:               │
+                   │  - Preview CR status     │
+                   │  - Pod/job logs          │
+                   │  - Microcks job output   │
+                   │  - K8s events            │
+                   └──────────┬───────────────┘
+                              │
+                              ▼
+                   Structured PR comment:
+                   Risk level / Evidence /
+                   Root cause / Suggested fix /
+                   Reproduction commands
 ```
 
 ### What Microcks adds
@@ -1508,11 +1560,12 @@ Existing pipeline                       New additions
 ─────────────────                       ──────────────
 1. AI enrichment (seed + tests)
 2. smoke-tests
-3. [NEW] microcks-contract-tests  ←── api/openapi.yaml validated
-4. suite-restore-regression
-5. regression-tests
-6. suite-restore-e2e
-7. e2e-tests
+3. [NEW] microcks-import          ←── uploads api/openapi.yaml to Microcks
+4. [NEW] microcks-contract-tests  ←── OPEN_API_SCHEMA validation
+5. suite-restore-regression
+6. regression-tests
+7. suite-restore-e2e
+8. e2e-tests
 
 On any failure → kagent ←─────────────── preview-troubleshooter-agent
                                           reads logs from all above steps
