@@ -465,12 +465,52 @@ def api_related_products(product_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/recommendations", methods=["GET"])
+def api_recommendations():
+    try:
+        category = request.args.get("category")
+        limit = min(int(request.args.get("limit", 5)), 20)
+        conn = get_conn(); cur = conn.cursor()
+        if category:
+            cur.execute("""
+                SELECT p.id, p.name, p.price, p.discount_pct,
+                       ROUND(AVG(r.rating)::numeric, 2) AS avg_rating
+                FROM products p
+                JOIN categories c ON p.category_id = c.id
+                LEFT JOIN reviews r ON p.id = r.product_id
+                WHERE c.name = %s AND p.stock > 0
+                GROUP BY p.id, p.name, p.price, p.discount_pct
+                ORDER BY avg_rating DESC NULLS LAST, p.discount_pct DESC
+                LIMIT %s
+            """, (category, limit))
+        else:
+            cur.execute("""
+                SELECT p.id, p.name, p.price, p.discount_pct,
+                       ROUND(AVG(r.rating)::numeric, 2) AS avg_rating
+                FROM products p
+                LEFT JOIN reviews r ON p.id = r.product_id
+                WHERE p.stock > 0
+                GROUP BY p.id, p.name, p.price, p.discount_pct
+                ORDER BY avg_rating DESC NULLS LAST, p.discount_pct DESC
+                LIMIT %s
+            """, (limit,))
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return jsonify([{
+            "id": r[0], "name": r[1], "price": float(r[2]),
+            "discount_pct": float(r[3]) if r[3] else 0,
+            "avg_rating": float(r[4]) if r[4] else None,
+        } for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.1",
+        "version":  "1.1.0",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "ai-test-strategist"]
     })
 
 
