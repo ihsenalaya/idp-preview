@@ -1,94 +1,52 @@
 #!/usr/bin/env python3
 """
-generate_preview_manifest.py — Classify the PR diff and emit changeContext + testStrategy
-fields to stdout as YAML, for injection into the Preview CR.
+generate_preview_manifest.py — Generate the complete Preview CR manifest with
+changeContext (diff classification) and testStrategy (mode=Auto).
+
+Outputs a valid Kubernetes YAML manifest ready to pipe to `kubectl apply -f -`.
 
 Usage:
   python3 scripts/generate_preview_manifest.py \
+    --pr-number 28 \
+    --branch feat/my-feature \
+    --image ghcr.io/owner/repo:sha \
     --base-sha <BASE_SHA> \
     --head-sha <HEAD_SHA> \
-    --pr-number <N> \
-    --repo <owner/repo> \
+    --repo owner/repo \
+    --repo-owner owner \
+    --repo-name repo \
+    --deployment-id 12345 \
+    --github-token-secret preview-github-token \
     [--max-patch-bytes 65536]
-
-Output (stdout):
-  changeContext:
-    diffRef:
-      provider: github
-      repository: owner/repo
-      pullRequestNumber: <N>
-      baseSHA: <BASE>
-      headSHA: <HEAD>
-    summary:
-      changedFilesCount: N
-      additions: N
-      deletions: N
-    changedFiles:
-      - path: app.py
-        type: backend
-    detectedImpacts:
-      database: false
-      apiContract: false
-      backend: true
-      frontend: false
-    diffPatch: |
-      <raw unified diff, up to --max-patch-bytes>
-  testStrategy:
-    mode: Auto
-    confidenceThreshold: 70
-    agentTimeoutSeconds: 120
-    fallbackOnAgentTimeout: Full
 """
 
 import argparse
 import subprocess
 import sys
+import json
 
 
-# ─── File classification rules ────────────────────────────────────────────────
-
-MIGRATION_PATTERNS = ["migrations/", "versions/", "alembic/"]
-API_CONTRACT_PATTERNS = ["openapi.yaml", "openapi.json", ".proto", "swagger.yaml", "swagger.json"]
-FRONTEND_PATTERNS = ["templates/", "static/", "frontend/", ".css", ".js", ".html", ".jsx", ".tsx", ".vue"]
-DOCS_PATTERNS = ["docs/", ".md", ".rst", ".txt", "README", "LICENSE", "CHANGELOG"]
-CONFIG_PATTERNS = [".yaml", ".yml", ".json", ".toml", ".ini", ".env", "Dockerfile", "Makefile", ".github/", "k8s/", "charts/", "config/"]
-
+# ─── File classification ──────────────────────────────────────────────────────
 
 def classify_file(path: str) -> str:
     p = path.lower()
-
-    for pat in MIGRATION_PATTERNS:
-        if pat in p:
-            return "database-migration"
-
-    for pat in API_CONTRACT_PATTERNS:
-        if p.endswith(pat.lstrip(".")) or pat.lstrip(".") in p:
-            return "api-contract"
-
-    for pat in FRONTEND_PATTERNS:
-        if pat in p or p.endswith(pat):
-            return "frontend"
-
-    for pat in DOCS_PATTERNS:
-        if pat.lower() in p or p.endswith(pat.lstrip(".")):
-            return "docs"
-
-    # Backend: Python/Go/Java source not already classified
-    if any(p.endswith(ext) for ext in [".py", ".go", ".java", ".rb", ".rs", ".ts"]):
+    if any(x in p for x in ["migrations/", "versions/", "alembic/"]):
+        return "database-migration"
+    if any(p.endswith(x) or x in p for x in ["openapi.yaml", "openapi.json", ".proto", "swagger.yaml", "swagger.json"]):
+        return "api-contract"
+    if any(x in p or p.endswith(x) for x in ["templates/", "static/", "frontend/", ".css", ".js", ".html", ".jsx", ".tsx", ".vue"]):
+        return "frontend"
+    if any(x in p or p.endswith(x.lstrip(".")) for x in ["docs/", ".md", ".rst", "README", "LICENSE", "CHANGELOG"]):
+        return "docs"
+    if any(p.endswith(x) for x in [".py", ".go", ".java", ".rb", ".rs", ".ts"]):
         return "backend"
-
-    for pat in CONFIG_PATTERNS:
-        if pat in p or p.endswith(pat.lstrip(".")):
-            return "other"
-
     return "other"
 
 
 def get_changed_files(base_sha: str, head_sha: str):
-    """Return list of (path, additions, deletions) for files changed between base and head."""
     result = subprocess.run(
         ["git", "diff", "--numstat", f"{base_sha}...{head_sha}"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True,
     )
     files = []
     for line in result.stdout.strip().splitlines():
@@ -96,89 +54,177 @@ def get_changed_files(base_sha: str, head_sha: str):
         if len(parts) == 3:
             add = int(parts[0]) if parts[0] != "-" else 0
             delete = int(parts[1]) if parts[1] != "-" else 0
-            path = parts[2]
-            files.append((path, add, delete))
+            files.append((parts[2], add, delete))
     return files
 
 
 def get_diff_patch(base_sha: str, head_sha: str, max_bytes: int) -> str:
-    """Return the raw unified diff, truncated to max_bytes."""
     result = subprocess.run(
         ["git", "diff", f"{base_sha}...{head_sha}"],
         capture_output=True, text=True,
     )
     patch = result.stdout
-    if len(patch.encode()) > max_bytes:
-        patch = patch.encode()[:max_bytes].decode(errors="replace")
-        patch += "\n... (diff truncated)\n"
+    encoded = patch.encode("utf-8", errors="replace")
+    if len(encoded) > max_bytes:
+        patch = encoded[:max_bytes].decode("utf-8", errors="replace") + "\n... (diff truncated)\n"
     return patch
 
 
-def indent(text: str, spaces: int) -> str:
-    pad = " " * spaces
-    return "\n".join(pad + line for line in text.splitlines())
+def yaml_literal_block(text: str, indent: int) -> str:
+    """Render a string as a YAML literal block scalar (|) with given indent."""
+    pad = " " * indent
+    lines = ["|"]
+    for line in text.splitlines():
+        # Escape nothing — literal block scalars preserve content verbatim.
+        lines.append(pad + line)
+    # Ensure trailing newline inside the block
+    if text and not text.endswith("\n"):
+        lines.append(pad)
+    return "\n".join(lines)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--base-sha", required=True)
-    parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--pr-number", required=True, type=int)
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--max-patch-bytes", type=int, default=65536)
-    parser.add_argument("--confidence-threshold", type=int, default=70)
-    parser.add_argument("--agent-timeout-seconds", type=int, default=120)
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--pr-number", required=True, type=int)
+    p.add_argument("--branch", required=True)
+    p.add_argument("--image", required=True)
+    p.add_argument("--base-sha", required=True)
+    p.add_argument("--head-sha", required=True)
+    p.add_argument("--repo", required=True, help="owner/repo slug")
+    p.add_argument("--repo-owner", required=True)
+    p.add_argument("--repo-name", required=True)
+    p.add_argument("--deployment-id", required=True)
+    p.add_argument("--github-token-secret", default="preview-github-token")
+    p.add_argument("--max-patch-bytes", type=int, default=65536)
+    p.add_argument("--confidence-threshold", type=int, default=70)
+    p.add_argument("--agent-timeout-seconds", type=int, default=120)
+    args = p.parse_args()
 
     changed = get_changed_files(args.base_sha, args.head_sha)
-
     total_add = sum(a for _, a, _ in changed)
     total_del = sum(d for _, _, d in changed)
-
     classified = [(path, classify_file(path)) for path, _, _ in changed]
+    types_set = {t for _, t in classified}
 
-    types = {t for _, t in classified}
-    database = "database-migration" in types
-    api_contract = "api-contract" in types
-    frontend = "frontend" in types
-    backend = "backend" in types
+    database    = "database-migration" in types_set
+    api_contract = "api-contract" in types_set
+    frontend    = "frontend" in types_set
+    backend     = "backend" in types_set
 
     patch = get_diff_patch(args.base_sha, args.head_sha, args.max_patch_bytes)
 
-    # ─── Emit YAML ────────────────────────────────────────────────────────────
-    lines = []
-    lines.append("changeContext:")
-    lines.append("  diffRef:")
-    lines.append("    provider: github")
-    lines.append(f"    repository: {args.repo}")
-    lines.append(f"    pullRequestNumber: {args.pr_number}")
-    lines.append(f"    baseSHA: {args.base_sha}")
-    lines.append(f"    headSHA: {args.head_sha}")
-    lines.append("  summary:")
-    lines.append(f"    changedFilesCount: {len(changed)}")
-    lines.append(f"    additions: {total_add}")
-    lines.append(f"    deletions: {total_del}")
-    lines.append("  changedFiles:")
+    # Build changed files YAML lines
+    changed_files_lines = []
     for path, ftype in classified:
-        lines.append(f"    - path: {path}")
-        lines.append(f"      type: {ftype}")
-    lines.append("  detectedImpacts:")
-    lines.append(f"    database: {str(database).lower()}")
-    lines.append(f"    apiContract: {str(api_contract).lower()}")
-    lines.append(f"    backend: {str(backend).lower()}")
-    lines.append(f"    frontend: {str(frontend).lower()}")
-    if patch.strip():
-        lines.append("  diffPatch: |")
-        for pline in patch.splitlines():
-            # Escape special YAML chars in the literal block scalar
-            lines.append("    " + pline)
-    lines.append("testStrategy:")
-    lines.append("  mode: Auto")
-    lines.append(f"  confidenceThreshold: {args.confidence_threshold}")
-    lines.append(f"  agentTimeoutSeconds: {args.agent_timeout_seconds}")
-    lines.append("  fallbackOnAgentTimeout: Full")
+        changed_files_lines.append(f"      - path: {json.dumps(path)}")
+        changed_files_lines.append(f"        type: {ftype}")
+    changed_files_yaml = "\n".join(changed_files_lines) if changed_files_lines else "      []"
 
-    print("\n".join(lines))
+    # Build diffPatch block (literal block scalar, indented 6 spaces under changeContext)
+    diff_patch_yaml = ""
+    if patch.strip():
+        lines = ["      diffPatch: |"]
+        for line in patch.splitlines():
+            lines.append("        " + line)
+        diff_patch_yaml = "\n".join(lines)
+
+    manifest = f"""\
+apiVersion: platform.company.io/v1alpha1
+kind: Preview
+metadata:
+  name: pr-{args.pr_number}
+spec:
+  branch: {args.branch}
+  prNumber: {args.pr_number}
+  image: {args.image}
+  resourceTier: medium
+  ttl: 48h
+  services:
+    - name: backend
+      image: {args.image}
+      port: 8080
+      pathPrefix: /api
+    - name: frontend
+      image: {args.image}
+      port: 3000
+      pathPrefix: /
+      env:
+        - name: APP_MODE
+          value: frontend
+        - name: PREVIEW_PR
+          value: "{args.pr_number}"
+        - name: PREVIEW_BRANCH
+          value: {args.branch}
+  database:
+    enabled: true
+    databaseName: appdb
+  telemetry:
+    enabled: true
+    serviceName: idp-testing
+    autoInstrumentation:
+      language: python
+      instrumentationRef: observability/python
+  testSuite:
+    enabled: true
+    smoke: {{}}
+    contractTesting:
+      enabled: true
+      microcksURL: http://microcks.microcks.svc.cluster.local:8080
+      apiName: Preview Catalog API
+      apiVersion: "1.0.0"
+      specURL: https://raw.githubusercontent.com/{args.repo}/{args.branch}/api/openapi.yaml
+    regression:
+      enabled: true
+    e2e:
+      enabled: true
+  aiEnrichment:
+    enabled: true
+    apiSecretRef:
+      name: ai-api-key
+      key: api-key
+    model: gpt-4o-mini
+  kagent:
+    enabled: true
+    namespace: kagent-system
+    agentName: preview-troubleshooter-agent
+  github:
+    enabled: true
+    owner: {args.repo_owner}
+    repo: {args.repo_name}
+    deploymentId: {args.deployment_id}
+    environment: pr-{args.pr_number}
+    commentOnReady: true
+    tokenSecretRef:
+      name: {args.github_token_secret}
+      namespace: preview-operator-system
+      key: token
+  changeContext:
+    diffRef:
+      provider: github
+      repository: {args.repo}
+      pullRequestNumber: {args.pr_number}
+      baseSHA: {args.base_sha}
+      headSHA: {args.head_sha}
+    summary:
+      changedFilesCount: {len(changed)}
+      additions: {total_add}
+      deletions: {total_del}
+    changedFiles:
+{changed_files_yaml}
+    detectedImpacts:
+      database: {str(database).lower()}
+      apiContract: {str(api_contract).lower()}
+      backend: {str(backend).lower()}
+      frontend: {str(frontend).lower()}
+{diff_patch_yaml}
+  testStrategy:
+    mode: Auto
+    confidenceThreshold: {args.confidence_threshold}
+    agentTimeoutSeconds: {args.agent_timeout_seconds}
+    fallbackOnAgentTimeout: Full
+"""
+
+    sys.stdout.write(manifest)
 
 
 if __name__ == "__main__":
