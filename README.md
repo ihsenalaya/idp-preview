@@ -35,13 +35,19 @@ Demo application and reference implementation for the **Preview Operator** — a
                              ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  GitHub Actions  (.github/workflows/preview.yaml)                               │
-│  runs-on: [self-hosted, kind]  ← runner pod inside the cluster                 │
+│  runs-on: [self-hosted, aks, test1]  ← runner pod inside the AKS cluster       │
 │                                                                                 │
 │  1. Kaniko Job  ──────► build image from git HEAD ──► push to GHCR             │
 │  2. github.rest.repos.createDeployment() ──► returns deploymentId              │
 │  3. kubectl apply Secret (PREVIEW_GITHUB_TOKEN)                                │
-│  4. kubectl apply Preview CR ──► name: pr-<N>                                 │
-│  5. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
+│  4. scripts/generate_preview_manifest.py                                       │
+│       ├── fetch PR changed files from GitHub API                               │
+│       ├── classify each file (frontend / backend / database-migration / …)    │
+│       └── write /tmp/preview-manifest.yaml with:                              │
+│             spec.changeContext.changedFiles + detectedImpacts                  │
+│             spec.testStrategy.mode: Auto                                       │
+│  5. kubectl apply -f /tmp/preview-manifest.yaml ──► Preview CR pr-<N>         │
+│  6. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
 └────────────────────────────┬────────────────────────────────────────────────────┘
                              │ CR created / updated in etcd
                              ▼
@@ -53,17 +59,17 @@ Demo application and reference implementation for the **Preview Operator** — a
 │  PHASE: Provisioning                                                            │
 │    ├── Create Namespace      preview-pr-<N>                                    │
 │    ├── Create ResourceQuota  (tier: small / medium / large)                    │
-│    ├── Provision PostgreSQL  (Deployment + Service + Secret)                   │
-│    ├── Run Migration Job     (optional — if spec.database.migration)           │
-│    ├── Run Seed Job          (optional — if spec.database.seed)                │
+│    ├── Provision PostgreSQL  (always when database.enabled, regardless of diff)│
+│    ├── Run Migration Job     (optional — if spec.database.migration.enabled)   │
+│    ├── Run Seed Job          (optional — if spec.database.seed.enabled)        │
 │    ├── Deploy Services       svc-backend (app.py:8080) + svc-frontend (3000)  │
-│    ├── Expose               VirtualService (Istio) or Nginx Ingress (auto-detected)│
+│    ├── Expose               VirtualService (Istio) or Nginx Ingress            │
 │    ├── Inject OTel           annotation → sidecar injected by OTel operator    │
 │    └── Post GitHub comment   "🔄 Provisioning en cours…"                      │
 │                                                                                 │
 │  PHASE: Running                                                                 │
 │    ├── Post GitHub Deployment: success + URL                                   │
-│    ├── Post PR comment: "## Preview Preview Ready"                            │
+│    ├── Post PR comment: "## Preview Ready"                                     │
 │    │                                                                            │
 │    ├── [AI ENRICHMENT — runs first, blocks tests until done]                  │
 │    │     step 1: schema-dump Job   ──► pg_dump --schema-only                  │
@@ -71,15 +77,23 @@ Demo application and reference implementation for the **Preview Operator** — a
 │    │     step 3: ai-seed Job       ──► psql seed.sql → 10 products, reviews  │
 │    │     step 4: ai-tests Job      ──► python test.py                         │
 │    │                                                                            │
-│    └── [TEST SUITE — starts only after AI enrichment Succeeded or Failed]     │
+│    ├── [TEST STRATEGY — mode: Auto]                                            │
+│    │     create TestPlan stub (phase=Pending)                                  │
+│    │     A2A call → test-strategist-agent (kagent-system)                     │
+│    │       agent reads changeContext.changedFiles                              │
+│    │       agent fills mustRun / canSkip with reasons                         │
+│    │     controller accepts plan (confidence ≥ threshold)                     │
+│    │     → phase=AwaitingTestPlan while waiting; fallback=Full on timeout      │
+│    │                                                                            │
+│    └── [TEST SUITE — only selected suites run; canSkip → Skipped]             │
 │          step 1: suite-checkpoint-save     ──► pg_dump → ConfigMap            │
 │          step 2: smoke-tests               ──► /healthz + /api/products       │
-│          step 3: microcks-import           ──► upload openapi.yaml (non-blocking)│
-│          step 4: microcks-contract-tests   ──► OPEN_API_SCHEMA validation     │
-│          step 5: suite-restore-regression  ──► TRUNCATE + psql replay         │
-│          step 6: regression-tests          ──► tests/regression.py            │
-│          step 7: suite-restore-e2e         ──► TRUNCATE + psql replay         │
-│          step 8: e2e-tests (Playwright)    ──► tests/e2e.py                   │
+│          step 3: microcks-import           ──► upload openapi.yaml (skipped if│
+│          step 4: microcks-contract-tests   ──►   contract not in mustRun)     │
+│          step 5: suite-restore-regression  ──► (skipped if regression not in  │
+│          step 6: regression-tests          ──►   mustRun)                     │
+│          step 7: suite-restore-e2e         ──► (skipped if e2e not in mustRun)│
+│          step 8: e2e-tests (Playwright)    ──►                                │
 │                                                                                 │
 │  PHASE: Terminating                                                             │
 │    ├── Delete all namespace resources                                          │
@@ -771,12 +785,20 @@ Reconcile(ctx, req)
      ├── 13. [phase = Running]
      │
      ├── 14. reconcileAIEnrichment() ──► (if enabled)
-     │         └── see §7 for full detail
+     │         └── see §8 for full detail
      │
-     └── 15. reconcileTestSuite()    ──► (if enabled AND AI done or disabled)
-               ├── saving → smoke → import-spec → contract
-               ├── restore-regression → regression
-               ├── restore-e2e → e2e
+     ├── 15. reconcileTestStrategy() ──► (if testStrategy.mode=Auto and AI done)
+     │         ├── create TestPlan stub (phase=Pending)
+     │         ├── A2A call → test-strategist-agent
+     │         ├── agent fills mustRun/canSkip → auto-promoted to Ready
+     │         ├── controller accepts if confidence ≥ threshold
+     │         └── fallback=Full if agent times out — see §7 for full detail
+     │
+     └── 16. reconcileTestSuite()    ──► (if enabled AND AI done AND plan accepted)
+               ├── saving → smoke (always)
+               ├── import-spec → contract  (only if contract in mustRun)
+               ├── restore-regression → regression  (only if regression in mustRun)
+               ├── restore-e2e → e2e  (only if e2e in mustRun)
                └── see §6 for full detail
 ```
 
@@ -837,10 +859,21 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
     "testsStatus": "Succeeded",
     "completedAt": "2026-05-08T09:05:00Z"
   },
+  "testPlanResolution": {
+    "source": "Agent",
+    "resolvedAt": "2026-05-08T09:05:30Z",
+    "rationale": "Frontend.py updated, necessitating e2e tests. Smoke and regression must run by default."
+  },
+  "testPlanRef": {
+    "name": "pr-42-kvw8n",
+    "namespace": "preview-pr-42"
+  },
   "tests": {
     "phase": "Succeeded",
     "step": "e2e",
     "smoke":      { "phase": "Succeeded", "passed": 2, "failed": 0 },
+    "migration":  { "phase": "Skipped" },
+    "contract":   { "phase": "Skipped" },
     "regression": { "phase": "Succeeded", "passed": 9, "failed": 0 },
     "e2e":        { "phase": "Succeeded", "passed": 6, "failed": 0 }
   },
@@ -861,7 +894,9 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
 | Jobs are looked up by name before creation | Prevents duplicate jobs |
 | Status is written after every significant state change | Enables crash recovery |
 | AI enrichment must complete before tests start | Tests need seeded data |
+| TestPlan accepted before tests start | Agent decides which suites run; fallback=Full on timeout |
 | `status.tests.step` is persisted in etcd | Pipeline resumes at exact step after restart |
+| Database always provisioned when `spec.database.enabled` | Infrastructure is not optional based on diff |
 | CRD schema must match Go types exactly | API server silently strips unknown fields — a mismatch causes infinite loops |
 
 ### Inspecting the pipeline
@@ -897,20 +932,28 @@ The Preview controller solves both by giving each PR its own namespace + databas
 
 ### Full pipeline chronology
 
+The suites that actually run depend on the **accepted TestPlan** (see §7). Suites in `canSkip` are marked `Skipped` and never scheduled. The checkpoint-save and smoke steps always run.
+
 ```
                      ┌─────────────────────────────────────────────────────┐
+                     │  TestPlan accepted (mustRun / canSkip decided)        │
+                     │  Example: mustRun=[smoke,regression,e2e]             │
+                     │           canSkip=[migration,contract]               │
+                     └───────────────┬─────────────────────────────────────┘
+                                     │
+                     ┌───────────────▼─────────────────────────────────────┐
                      │  Database state after AI seed                        │
                      │  10 products, 3 categories, reviews, orders          │
                      └───────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-checkpoint-save                           │
+                    │  Job: suite-checkpoint-save   (always)                │
                     │  pg_dump --data-only → ConfigMap "db-checkpoint-      │
                     │  after-seed" in namespace preview-pr-<N>             │
                     └────────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: smoke-tests                                     │
+                    │  Job: smoke-tests   (always in mustRun)               │
                     │  Image: python:3.11  (embedded smoke script)          │
                     │  APP_URL=http://svc-backend:8080                      │
                     │  Tests:                                               │
@@ -919,59 +962,36 @@ The Preview controller solves both by giving each PR its own namespace + databas
                     └────────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: microcks-import  (non-blocking)                 │
-                    │  Image: python:3.11                                   │
-                    │  Fetches openapi.yaml from SPEC_URL (GitHub raw)     │
-                    │  Uploads to Microcks /api/artifact/upload            │
-                    │  Uses Keycloak password grant (manager role)         │
-                    │  Failure does NOT stop the pipeline                  │
+                    │  contract in TestPlan.mustRun?                        │
+                    │    YES ──► Job: microcks-import  (non-blocking)       │
+                    │              Fetches + uploads openapi.yaml           │
+                    │            Job: microcks-contract-tests               │
+                    │              OPEN_API_SCHEMA validation               │
+                    │              On failure → kagent analysis             │
+                    │    NO  ──► status.tests.contract.phase = Skipped      │
                     └────────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: microcks-contract-tests                         │
-                    │  Image: python:3.11                                   │
-                    │  Runner: OPEN_API_SCHEMA                             │
-                    │  BACKEND_URL=http://svc-backend.preview-pr-<N>       │
-                    │            .svc.cluster.local:8080  (full FQDN)     │
-                    │  Validates every 2xx response against openapi.yaml   │
-                    │  Results posted to PR comment                        │
-                    │  On failure → kagent triggered for AI analysis       │
+                    │  regression in TestPlan.mustRun?                      │
+                    │    YES ──► Job: suite-restore-regression              │
+                    │              TRUNCATE + psql replay                   │
+                    │            Job: regression-tests                      │
+                    │              /app/tests/regression.py (9 assertions)  │
+                    │    NO  ──► status.tests.regression.phase = Skipped    │
                     └────────────────┬─────────────────────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-restore-regression                        │
-                    │  TRUNCATE all tables + psql replay from ConfigMap     │
-                    │  → DB back to post-seed state                         │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: regression-tests                                │
-                    │  Image: app image                                     │
-                    │  APP_URL=http://svc-backend:8080                      │
-                    │  FRONTEND_URL=http://svc-frontend:3000                │
-                    │  Script: /app/tests/regression.py                    │
-                    │  Tests: 9 HTTP endpoint assertions                    │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: suite-restore-e2e                               │
-                    │  TRUNCATE + psql replay                               │
-                    │  → DB back to post-seed state                         │
-                    └────────────────┬─────────────────────────────────────┘
-                                     │
-                    ┌────────────────▼─────────────────────────────────────┐
-                    │  Job: e2e-tests                                       │
-                    │  Image: mcr.microsoft.com/playwright/python:v1.44.0  │
-                    │  APP_URL=http://svc-frontend:3000                     │
-                    │  FRONTEND_URL=http://svc-frontend:3000                │
-                    │  CHECKPOINT_API=http://preview-extension:8090/…     │
-                    │                                                       │
-                    │  test_catalog_page_loads    ← reset_db() first       │
-                    │  test_preview_badge_shown   ← reset_db() first       │
-                    │  test_product_detail_panel  ← reset_db() first       │
-                    │  test_related_section       ← reset_db() first       │
-                    │  test_discount_filter       ← reset_db() first       │
-                    │  test_close_detail          ← reset_db() first       │
+                    │  e2e in TestPlan.mustRun?                             │
+                    │    YES ──► Job: suite-restore-e2e                     │
+                    │              TRUNCATE + psql replay                   │
+                    │            Job: e2e-tests  (Playwright)               │
+                    │              test_catalog_page_loads  ← reset_db()   │
+                    │              test_preview_badge_shown ← reset_db()   │
+                    │              test_product_detail_panel← reset_db()   │
+                    │              test_related_section     ← reset_db()   │
+                    │              test_discount_filter     ← reset_db()   │
+                    │              test_close_detail        ← reset_db()   │
+                    │    NO  ──► status.tests.e2e.phase = Skipped           │
                     └───────────────────────────────────────────────────────┘
 ```
 
