@@ -133,6 +133,7 @@ jobs:
             image: ${IMAGE}
             resourceTier: medium
             ttl: 48h
+            testStrategy: ai
             services:
               - name: backend
                 image: ${IMAGE}
@@ -161,6 +162,8 @@ jobs:
             testSuite:
               enabled: true
               smoke: {}
+              migration:
+                enabled: true
               contractTesting:
                 enabled: true
                 microcksURL: http://microcks.microcks.svc.cluster.local:8080
@@ -181,6 +184,7 @@ jobs:
               enabled: true
               namespace: kagent-system
               agentName: preview-troubleshooter-agent
+              testStrategistAgentName: test-strategist-agent
             github:
               enabled: true
               owner: ${{ github.repository_owner }}

@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 app = Flask(__name__)
 
@@ -67,10 +67,18 @@ def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS wishlists (
+            id         SERIAL PRIMARY KEY,
+            product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT wishlists_product_id_key UNIQUE (product_id)
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
-    log("Schema ready", tables="categories,products,reviews,orders")
+    log("Schema ready", tables="categories,products,reviews,orders,wishlists")
 
 
 def fetch_all_dicts(cur):
@@ -80,7 +88,7 @@ def fetch_all_dicts(cur):
 
 @app.route("/healthz")
 def healthz():
-    return "ok", 200
+    return Response("ok", mimetype="text/plain")
 
 
 @app.route("/ping")
@@ -468,10 +476,65 @@ def api_related_products(product_id):
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.1",
+        "version":  "1.0.2",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "wishlist"]
     })
+
+
+# ── Wishlist ──────────────────────────────────────────────────────────────────
+
+@app.route("/api/wishlist", methods=["GET"])
+def api_get_wishlist():
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT product_id FROM wishlists ORDER BY created_at DESC"
+        )
+        product_ids = [r[0] for r in cur.fetchall()]
+        cur.close(); conn.close()
+        # BUG: field names should be "items"/"count" but return "wishlist"/"total"
+        return jsonify({"wishlist": product_ids, "total": len(product_ids)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wishlist", methods=["POST"])
+def api_add_to_wishlist():
+    data = request.get_json(silent=True) or {}
+    product_id = data.get("product_id")
+    if not product_id:
+        return jsonify({"error": "product_id is required"}), 400
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO wishlists (product_id) VALUES (%s) "
+            "ON CONFLICT ON CONSTRAINT wishlists_product_id_key DO NOTHING "
+            "RETURNING id,product_id,created_at",
+            (product_id,)
+        )
+        r = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        if r:
+            return jsonify({"id": r[0], "product_id": r[1],
+                            "created_at": r[2].isoformat()}), 201
+        return jsonify({"message": "already in wishlist"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wishlist/<int:product_id>", methods=["DELETE"])
+def api_remove_from_wishlist(product_id):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("DELETE FROM wishlists WHERE product_id=%s RETURNING id", (product_id,))
+        deleted = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        if not deleted:
+            return jsonify({"error": "not in wishlist"}), 404
+        return "", 204
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

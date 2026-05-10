@@ -193,7 +193,7 @@ def index(path):
 
 <header>
   <div class="logo">&#128683; Preview<span>Platform</span></div>
-  {"" if not PR else f'<span class="badge">{pr_label}</span>'}
+  {"" if not PR else f'<span class="badge" data-testid="preview-badge">{pr_label}</span>'}
   <span class="badge branch">&#127944; {branch_label}</span>
 </header>
 
@@ -310,28 +310,28 @@ def index(path):
     </div>
     <p class="error-msg" id="form-error"></p>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.5rem">
-      <input id="discount-filter" type="number" placeholder="Min discount %" min="0" max="100" style="max-width:160px">
-      <button onclick="applyDiscount()">Filter discounts</button>
+      <input id="discount-filter" data-testid="discount-input" type="number" placeholder="Min discount %" min="0" max="100" style="max-width:160px">
+      <button data-testid="discount-apply" onclick="applyDiscount()">Filter discounts</button>
       <button class="secondary" onclick="loadProducts()">Show all</button>
     </div>
-    <div id="catalog-sections"><p class="empty">Loading…</p></div>
+    <div id="catalog-sections" data-testid="product-grid"><p class="empty">Loading…</p></div>
   </div>
 
 </div>
 
 <!-- ── Detail panel ── -->
-<div class="panel-overlay" id="panel-overlay" onclick="closePanel(event)">
-  <div class="panel" id="detail-panel">
-    <button class="close-btn" onclick="closePanel()">✕ Close</button>
-    <h3 id="detail-name"></h3>
-    <div class="price" id="detail-price"></div>
+<div class="panel-overlay" id="panel-overlay" data-testid="detail-overlay" onclick="closePanel(event)">
+  <div class="panel" id="detail-panel" data-testid="product-detail">
+    <button class="close-btn" data-testid="close-detail" onclick="closePanel()">✕ Close</button>
+    <h3 id="detail-name" data-testid="detail-name"></h3>
+    <div class="price" id="detail-price" data-testid="detail-price"></div>
     <p id="detail-desc" style="font-size:.84rem;color:var(--muted)"></p>
     <div id="detail-stock" style="font-size:.8rem;color:var(--muted)"></div>
     <div>
       <div class="section-title">Customer reviews</div>
       <div id="reviews-list"></div>
     </div>
-    <div>
+    <div data-testid="related-section">
       <div class="section-title">Related products</div>
       <div class="related-list" id="related-list"></div>
     </div>
@@ -410,11 +410,11 @@ def index(path):
   function productCardHTML(p) {{
     const disc  = parseFloat(p.discount_pct || 0);
     const final = (parseFloat(p.price) * (1 - disc / 100)).toFixed(2);
-    const discBadge = disc ? `<span class="disc">-${{Math.round(disc)}}%</span>` : '';
+    const discBadge = disc ? `<span class="disc" data-testid="product-discount">-${{Math.round(disc)}}%</span>` : '';
     const avg = p.avg_rating
       ? `<div style="margin-top:.25rem"><span class="stars">${{stars(p.avg_rating)}}</span> <small style="color:var(--muted2)">${{p.review_count}}</small></div>`
       : '';
-    return `<div class="prod-card" data-id="${{p.id}}" onclick="openPanel(${{p.id}})">
+    return `<div class="prod-card" data-testid="product-card" data-id="${{p.id}}" onclick="openPanel(${{p.id}})">
       <div class="prod-cat">${{p.category_name || 'Uncategorised'}}</div>
       <div class="prod-name">${{p.name}}</div>
       <div class="prod-desc">${{p.description || ''}}</div>

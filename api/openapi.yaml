@@ -427,6 +427,101 @@ paths:
                     created_at: '2026-05-01T11:00:00+00:00'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/wishlist:
+    get:
+      operationId: getWishlist
+      summary: Get all items in the wishlist
+      tags:
+      - Wishlist
+      responses:
+        '200':
+          description: Current wishlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistResponse'
+              examples:
+                Example_1:
+                  value:
+                    items:
+                    - 1
+                    - 3
+                    count: 2
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: addToWishlist
+      summary: Add a product to the wishlist
+      tags:
+      - Wishlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WishlistAdd'
+            examples:
+              Example_1:
+                value:
+                  product_id: 1
+      responses:
+        '201':
+          description: Product added to wishlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistItem'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    product_id: 1
+                    created_at: '2026-05-10T10:00:00+00:00'
+        '200':
+          description: Already in wishlist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              examples:
+                Example_1:
+                  value:
+                    message: already in wishlist
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: product_id is required
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/wishlist/{product_id}:
+    delete:
+      operationId: removeFromWishlist
+      summary: Remove a product from the wishlist
+      tags:
+      - Wishlist
+      parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        description: Product identifier
+        example: 1
+      responses:
+        '204':
+          description: Removed from wishlist (no body)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/stats:
     get:
       operationId: getStats
@@ -866,6 +961,44 @@ components:
           type: array
           items:
             type: string
+    WishlistResponse:
+      type: object
+      required:
+      - items
+      - count
+      properties:
+        items:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        count:
+          type: integer
+          minimum: 0
+    WishlistAdd:
+      type: object
+      required:
+      - product_id
+      properties:
+        product_id:
+          type: integer
+          minimum: 1
+    WishlistItem:
+      type: object
+      required:
+      - id
+      - product_id
+      - created_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        product_id:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       required:
@@ -887,3 +1020,5 @@ tags:
   description: Order placement
 - name: Stats
   description: Aggregated platform statistics
+- name: Wishlist
+  description: User wishlist management
