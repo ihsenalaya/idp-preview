@@ -1,6 +1,6 @@
 # idp-preview — Preview Platform
 
-Demo application and reference implementation for the **Preview Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, and AI-generated seed data.
+Demo application and reference implementation for the **Preview Operator** — a Kubernetes controller that turns every pull request into a fully isolated preview environment, complete with its own database, URL, test pipeline, AI-generated seed data, and **kagent-powered PR diff analysis**.
 
 ---
 
@@ -14,9 +14,10 @@ Demo application and reference implementation for the **Preview Operator** — a
 6. [Test Suite Orchestration](#6-test-suite-orchestration)
 7. [AI Enrichment Orchestration](#7-ai-enrichment-orchestration)
 8. [GitHub Integration](#8-github-integration)
-9. [Copilot Extension](#9-copilot-extension)
-10. [Application Reference](#10-application-reference)
-11. [Troubleshooting](#11-troubleshooting)
+9. [PR Diff Analysis with kagent](#9-pr-diff-analysis-with-kagent)
+10. [Copilot Extension](#10-copilot-extension)
+11. [Application Reference](#11-application-reference)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -1265,7 +1266,115 @@ kubectl port-forward -n observability svc/jaeger 16686:16686
 
 ---
 
-## 9. Copilot Extension
+## 9. PR Diff Analysis with kagent
+
+Every pull request triggers an intelligent diff analysis powered by **kagent** — an AI agent running inside the cluster. Instead of rule-based file classification, a LLM reads the actual list of changed files, understands their context, and produces a structured impact report posted directly as a PR comment.
+
+### Architecture
+
+```
+GitHub Actions runner (pod in AKS)
+  │
+  └─ POST http://preview-diff-analyzer.kagent-system:8080/
+       payload: "Analyze PR #N in repo owner/repo"
+       │
+       ▼
+  kagent Agent: preview-diff-analyzer
+       │
+       ├─ gh_get_pr_files ──► GitHub MCP Server (port 8812) ──► GitHub API
+       │     returns: list of changed files
+       │
+       ├─ LLM classifies each file (Azure OpenAI gpt-4o-mini)
+       │     database-migration | api-contract | backend | frontend | infrastructure | docs | other
+       │
+       ├─ derives detectedImpacts
+       │     database | apiContract | backend | frontend | infrastructure
+       │
+       └─ gh_post_pr_comment ──► GitHub MCP Server ──► GitHub API
+             posts structured Markdown comment on the PR
+```
+
+### What gets posted on the PR
+
+```markdown
+## 🔍 PR Diff Analysis
+
+| File | Type | Impact |
+|------|------|--------|
+| `api/openapi.yaml`                        | `api-contract`       | ⚠️ |
+| `app.py`                                  | `backend`            | 🔵 |
+| `migrations/versions/003_add_payments.py` | `database-migration` | ⚠️ |
+
+### Detected Impacts
+| Area | Status |
+|------|--------|
+| 🗄️ Database migration | ✅ Yes |
+| 📋 API contract       | ✅ Yes |
+| ⚙️ Backend            | ✅ Yes |
+| 🎨 Frontend           | ⬜ No  |
+| 🏗️ Infrastructure     | ⬜ No  |
+
+### Pipeline Adaptations
+- Database migration job will run before deployment
+- Microcks contract tests will run (API spec changed)
+- Regression tests will run (backend code changed)
+```
+
+### Components
+
+| Component | Location | Role |
+|-----------|----------|------|
+| `github-mcp-server` | `github-mcp/server.py` | MCP server exposing GitHub API tools |
+| `preview-diff-analyzer` | `k8s/kagent/preview-diff-analyzer-agent.yaml` | kagent Agent definition |
+| `github-mcp-server` K8s | `k8s/kagent/github-mcp-server.yaml` | Deployment + Service + RemoteMCPServer |
+
+### GitHub MCP Server tools
+
+| Tool | Description |
+|------|-------------|
+| `gh_get_pr_info` | PR metadata (title, branch, author, SHA) |
+| `gh_get_pr_files` | List of changed files with status and patch excerpt |
+| `gh_post_pr_comment` | Post a new Markdown comment |
+| `gh_update_pr_comment` | Update an existing comment by ID |
+| `gh_find_pr_comment` | Find a bot comment by prefix (avoids duplicates) |
+
+### Installation
+
+```bash
+# Build and push the GitHub MCP server image
+docker build -t ghcr.io/<org>/github-mcp-server:latest github-mcp/
+docker push ghcr.io/<org>/github-mcp-server:latest
+
+# Create the GitHub token secret in kagent-system
+kubectl create secret generic preview-github-token \
+  --namespace=kagent-system \
+  --from-literal=token=<GITHUB_TOKEN>
+
+# Deploy
+kubectl apply -f k8s/kagent/github-mcp-server.yaml
+kubectl apply -f k8s/kagent/preview-diff-analyzer-agent.yaml
+```
+
+### Verification
+
+```bash
+# Check pods
+kubectl get pods -n kagent-system | grep -E "diff-analyzer|github-mcp"
+
+# Check agent is Ready
+kubectl get agent preview-diff-analyzer -n kagent-system
+
+# Check MCP server is Accepted
+kubectl get remotemcpserver github-mcp-server -n kagent-system
+
+# Stream agent logs during a PR analysis
+kubectl logs -n kagent-system -l app.kubernetes.io/name=preview-diff-analyzer -f
+```
+
+---
+
+## 10. Copilot Extension
+
 
 Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl` needed.
 
@@ -1317,7 +1426,7 @@ ngrok http 8090
 
 ---
 
-## 10. Application Reference
+## 11. Application Reference
 
 ### Services
 
@@ -1397,7 +1506,7 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Runner token expired
 
@@ -1499,7 +1608,7 @@ helm repo update
 
 ---
 
-## 12. Contract testing and AI-powered failure analysis
+## 13. Contract testing and AI-powered failure analysis
 
 > **Platform narrative:**
 > "Every pull request gets an isolated Kubernetes preview environment,
