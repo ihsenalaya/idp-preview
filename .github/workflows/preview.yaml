@@ -224,29 +224,12 @@ jobs:
 
       - name: Analyze PR diff with kagent
         run: |
-          PAYLOAD=$(python3 -c "
-import json
-payload = {
-  'jsonrpc': '2.0',
-  'id': 1,
-  'method': 'message/send',
-  'params': {
-    'message': {
-      'role': 'user',
-      'parts': [{
-        'type': 'text',
-        'text': 'Analyze the diff for PR #${{ github.event.pull_request.number }} in repo ${{ github.repository }} and post a structured analysis comment on the PR.'
-      }]
-    }
-  }
-}
-print(json.dumps(payload))
-")
+          PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"type":"text","text":"Analyze the diff for PR #${{ github.event.pull_request.number }} in repo ${{ github.repository }} and post a structured analysis comment on the PR."}]}}}'
           RESPONSE=$(curl -s -X POST \
             "http://preview-diff-analyzer.kagent-system.svc.cluster.local:8080/" \
             -H "Content-Type: application/json" \
-            -d "\$PAYLOAD" --max-time 120)
-          echo "kagent response: \$RESPONSE"
+            -d "$PAYLOAD" --max-time 120)
+          echo "kagent response: $RESPONSE"
 
       - name: Cleanup Kaniko secret
         if: always()
