@@ -12,11 +12,12 @@ Demo application and reference implementation for the **Preview Operator** — a
 4. [The Preview Custom Resource](#4-the-preview-custom-resource)
 5. [Controller Deep Dive](#5-controller-deep-dive)
 6. [Test Suite Orchestration](#6-test-suite-orchestration)
-7. [AI Enrichment Orchestration](#7-ai-enrichment-orchestration)
-8. [GitHub Integration](#8-github-integration)
-9. [Copilot Extension](#9-copilot-extension)
-10. [Application Reference](#10-application-reference)
-11. [Troubleshooting](#11-troubleshooting)
+7. [AI Test Strategist — Diff-Driven Test Selection](#7-ai-test-strategist--diff-driven-test-selection)
+8. [AI Enrichment Orchestration](#8-ai-enrichment-orchestration)
+9. [GitHub Integration](#9-github-integration)
+10. [Copilot Extension](#10-copilot-extension)
+11. [Application Reference](#11-application-reference)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -1071,7 +1072,166 @@ kubectl logs -n preview-pr-42 job/e2e-tests -f
 
 ---
 
-## 7. AI Enrichment Orchestration
+## 7. AI Test Strategist — Diff-Driven Test Selection
+
+When `spec.testStrategy.mode: Auto` is set, the **test-strategist-agent** (a kagent agent) analyses the PR diff and decides which test suites to run — before a single test job is scheduled.
+
+### How it fits the pipeline
+
+```
+Preview CR applied (testStrategy.mode: Auto)
+       │
+       ▼
+Controller creates TestPlan stub (status.phase = Pending)
+       │
+       ▼
+triggerTestStrategistAgent()
+       │  A2A JSON-RPC call to test-strategist-agent.kagent-system
+       ▼
+Agent reads spec.changeContext.changedFiles + detectedImpacts
+       │
+       ├─ changed: frontend.py (type: frontend)
+       │     → mustRun: smoke, e2e, regression
+       │     → canSkip: migration ("No migration files"),
+       │                contract  ("No API contract changes")
+       │
+       ├─ changed: migrations/versions/*.py (type: database-migration)
+       │     → mustRun: smoke, migration, regression, e2e (hard rule)
+       │
+       └─ changed: api/openapi.yaml (type: api-contract)
+             → mustRun: smoke, contract, regression, e2e (hard rule)
+       │
+       ▼
+TestPlan spec patched → controller promotes to Ready → accepted
+       │
+       ▼
+reconcileTestSuite() runs ONLY mustRun + shouldRun suites
+canSkip suites → phase = Skipped (never scheduled)
+```
+
+### changeContext — how the diff is injected
+
+The GitHub Actions workflow (`scripts/generate_preview_manifest.py`) fetches the list of changed files from the GitHub PR API and embeds them in the manifest:
+
+```yaml
+spec:
+  testStrategy:
+    mode: Auto
+    confidenceThreshold: 65
+  changeContext:
+    diffRef:
+      headSHA: 645d2166f2d1d32c0ef9561e6cf9b56fad519af8
+      baseSHA: 86d098a5e4d12f3
+    summary:
+      changedFilesCount: 1
+    detectedImpacts:
+      database: false
+      apiContract: false
+      frontend: true
+      backend: false
+    changedFiles:
+      - path: frontend.py
+        type: frontend
+```
+
+File type classification (`scripts/generate_preview_manifest.py`):
+
+| Path pattern | Classified as |
+|---|---|
+| `migrations/versions/` | `database-migration` |
+| `api/openapi.yaml` | `api-contract` |
+| `frontend.py`, `templates/`, `static/` | `frontend` |
+| `app.py`, `tests/` | `backend` |
+| `README`, `*.md`, `docs/` | `docs` |
+| everything else | `other` |
+
+### TestPlan produced for a CSS-only PR
+
+```yaml
+spec:
+  generatedBy: Agent
+  confidence: 75
+  rationale: >
+    Frontend.py updated, necessitating e2e tests.
+    Smoke and regression must run by default.
+  mustRun:
+    - { suite: smoke,      name: "*", reason: "smoke always runs — baseline liveness" }
+    - { suite: e2e,        name: "*", reason: "Frontend changes require e2e coverage." }
+    - { suite: regression, name: "*", reason: "Regression tests must run after any changes." }
+  canSkip:
+    - { suite: migration, name: "*", reason: "No migration files changed." }
+    - { suite: contract,  name: "*", reason: "No API contract changes." }
+```
+
+### PR comment — kagent strategy section
+
+The test results comment includes a strategy section when `mode: Auto`:
+
+```markdown
+### 🧠 Stratégie kagent
+
+> Frontend.py updated, necessitating e2e tests. Smoke and regression must run by default.
+
+Confiance : **75%**
+
+**Suites ignorées :**
+
+| Suite     | Raison du skip                |
+|-----------|-------------------------------|
+| ⏭️ migration | No migration files changed. |
+| ⏭️ contract  | No API contract changes.    |
+
+| Suite               | Résultat     | Passed | Failed |
+|---------------------|--------------|--------|--------|
+| 🔥 Smoke            | ✅ Succeeded | 2      | 0      |
+| 🗄️ Migration        | ⏳ Pending   | —      | —      |
+| 📋 Contract (Microcks) | ⏳ Pending | 0      | 0      |
+| 🔁 Regression       | ❌ Failed    | 7      | 2      |
+| 🌐 E2E              | ❌ Failed    | 1      | 5      |
+```
+
+### Agent configuration in the manifest
+
+```yaml
+spec:
+  testStrategy:
+    mode: Auto
+    confidenceThreshold: 65
+    fallbackOnAgentTimeout: Full
+    agentTimeoutSeconds: 60
+  kagent:
+    enabled: true
+    namespace: kagent-system
+    agentName: preview-troubleshooter-agent
+    testStrategistAgentName: test-strategist-agent
+```
+
+### Deploy the test-strategist agent
+
+```bash
+kubectl apply -f k8s/kagent/agents/test-strategist-agent.yaml
+
+# Verify
+kubectl get agent test-strategist-agent -n kagent-system
+# Expected: READY=True ACCEPTED=True
+```
+
+### Monitor test selection
+
+```bash
+# Watch TestPlan appear and be accepted
+kubectl get testplan -n preview-pr-27 -w
+
+# See which suites were selected
+kubectl get testplan -n preview-pr-27 -o jsonpath='{.items[0].spec}' | jq '{mustRun,canSkip,confidence,rationale}'
+
+# See which suites were actually run
+kubectl get testrun -n preview-pr-27 -o jsonpath='{.items[0].spec.selectedTests}' | jq .
+```
+
+---
+
+## 8. AI Enrichment Orchestration
 
 ### Why before tests
 
@@ -1209,7 +1369,7 @@ The AI uses `tests/example_test.py` as a template — 18 integration tests cover
 
 ---
 
-## 8. GitHub Integration
+## 9. GitHub Integration
 
 The operator calls the GitHub API directly from its reconciliation loop — no external webhook, no polling service.
 
@@ -1265,7 +1425,7 @@ kubectl port-forward -n observability svc/jaeger 16686:16686
 
 ---
 
-## 9. Copilot Extension
+## 10. Copilot Extension
 
 Manage preview environments from GitHub Copilot Chat in VS Code — no `kubectl` needed.
 
@@ -1317,7 +1477,7 @@ ngrok http 8090
 
 ---
 
-## 10. Application Reference
+## 11. Application Reference
 
 ### Services
 
@@ -1397,7 +1557,7 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Runner token expired
 
@@ -1488,7 +1648,7 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.19** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.30** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1511,7 +1671,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.19** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.30** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1532,7 +1692,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.19                                            │
+│  Preview Operator 1.0.30                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
