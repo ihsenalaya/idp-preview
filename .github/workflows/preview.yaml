@@ -120,152 +120,24 @@ jobs:
             --from-literal=token='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Compute change context from PR diff
-        id: ctx
+      - name: Generate Preview manifest
         run: |
-          python3 << 'PYEOF'
-          import json, os, re, urllib.request
-
-          pr_num  = '${{ github.event.pull_request.number }}'
-          repo    = '${{ github.repository }}'
-          token   = os.environ.get('GH_TOKEN', '')
-
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/pulls/{pr_num}/files?per_page=100",
-              headers={"Authorization": f"token {token}",
-                       "Accept": "application/vnd.github.v3+json"}
-          )
-          with urllib.request.urlopen(req, timeout=15) as r:
-              files = json.loads(r.read())
-
-          def classify(path):
-              if re.search(r'migrations/versions/', path): return 'migration'
-              if re.search(r'api/openapi\.yaml',   path): return 'contract'
-              if re.search(r'frontend\.py|templates/|static/', path): return 'frontend'
-              if re.search(r'app\.py|tests/',       path): return 'backend'
-              return 'config'
-
-          changed = [{"path": f["filename"], "type": classify(f["filename"])} for f in files]
-
-          database    = any(c["type"] == "migration" for c in changed)
-          apiContract = any(c["type"] == "contract"  for c in changed)
-          frontend    = any(c["type"] == "frontend"  for c in changed)
-          backend     = any(c["type"] == "backend"   for c in changed)
-
-          # YAML lines for changedFiles — indented to match the manifest heredoc
-          yaml_lines = []
-          for c in changed:
-              yaml_lines.append(f"              - path: {c['path']}")
-              yaml_lines.append(f"                type: {c['type']}")
-
-          out = os.environ.get('GITHUB_OUTPUT', '/dev/stdout')
-          with open(out, 'a') as fh:
-              fh.write(f"DATABASE={'true' if database else 'false'}\n")
-              fh.write(f"APICONTRACT={'true' if apiContract else 'false'}\n")
-              fh.write(f"FRONTEND={'true' if frontend else 'false'}\n")
-              fh.write(f"BACKEND={'true' if backend else 'false'}\n")
-              fh.write(f"COUNT={len(changed)}\n")
-              fh.write("CHANGED_FILES<<__EOF__\n")
-              fh.write("\n".join(yaml_lines) + "\n")
-              fh.write("__EOF__\n")
-
-          print(f"[ctx] {len(changed)} files — db={database} api={apiContract} frontend={frontend} backend={backend}")
-          PYEOF
+          python3 scripts/generate_preview_manifest.py
         env:
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          IMAGE: ${{ env.IMAGE }}
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.result }}
+          CTRL_SECRET: ${{ env.CONTROLLER_GITHUB_TOKEN_SECRET }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Apply Preview manifest
-        run: |
-          kubectl apply -f - <<EOF
-          apiVersion: platform.company.io/v1alpha1
-          kind: Preview
-          metadata:
-            name: pr-${{ github.event.pull_request.number }}
-          spec:
-            branch: ${{ github.head_ref }}
-            prNumber: ${{ github.event.pull_request.number }}
-            image: ${IMAGE}
-            resourceTier: medium
-            ttl: 48h
-            testStrategy:
-              mode: Auto
-              confidenceThreshold: 65
-            changeContext:
-              diffRef:
-                headSHA: ${{ github.event.pull_request.head.sha }}
-                baseSHA: ${{ github.event.pull_request.base.sha }}
-              summary:
-                changedFilesCount: ${{ steps.ctx.outputs.COUNT }}
-              detectedImpacts:
-                database: ${{ steps.ctx.outputs.DATABASE }}
-                apiContract: ${{ steps.ctx.outputs.APICONTRACT }}
-                frontend: ${{ steps.ctx.outputs.FRONTEND }}
-                backend: ${{ steps.ctx.outputs.BACKEND }}
-              changedFiles:
-${{ steps.ctx.outputs.CHANGED_FILES }}
-            services:
-              - name: backend
-                image: ${IMAGE}
-                port: 8080
-                pathPrefix: /api
-              - name: frontend
-                image: ${IMAGE}
-                port: 3000
-                pathPrefix: /
-                env:
-                  - name: APP_MODE
-                    value: frontend
-                  - name: PREVIEW_PR
-                    value: "${{ github.event.pull_request.number }}"
-                  - name: PREVIEW_BRANCH
-                    value: ${{ github.head_ref }}
-            database:
-              enabled: true
-              databaseName: appdb
-            telemetry:
-              enabled: true
-              serviceName: idp-testing
-              autoInstrumentation:
-                language: python
-                instrumentationRef: observability/python
-            testSuite:
-              enabled: true
-              smoke: {}
-              migration:
-                enabled: true
-              contractTesting:
-                enabled: true
-                microcksURL: http://microcks.microcks.svc.cluster.local:8080
-                apiName: Preview Catalog API
-                apiVersion: "1.0.0"
-                specURL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.head_ref }}/api/openapi.yaml
-              regression:
-                enabled: true
-              e2e:
-                enabled: true
-            aiEnrichment:
-              enabled: true
-              apiSecretRef:
-                name: ai-api-key
-                key: api-key
-              model: gpt-4o-mini
-            kagent:
-              enabled: true
-              namespace: kagent-system
-              agentName: preview-troubleshooter-agent
-              testStrategistAgentName: test-strategist-agent
-            github:
-              enabled: true
-              owner: ${{ github.repository_owner }}
-              repo: ${{ github.event.repository.name }}
-              deploymentId: ${{ steps.deployment.outputs.result }}
-              environment: pr-${{ github.event.pull_request.number }}
-              commentOnReady: true
-              tokenSecretRef:
-                name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
-                namespace: preview-operator-system
-                key: token
-          EOF
+        run: kubectl apply -f /tmp/preview-manifest.yaml
 
       - name: Wait for Preview to be ready
         run: |
