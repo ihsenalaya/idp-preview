@@ -108,131 +108,56 @@ jobs:
             });
             return deployment.data.id;
 
-      - name: Classify PR diff (changeContext)
-        id: classify
+      - name: Analyze PR diff with kagent
         run: |
-          python3 - <<'PYEOF'
-          import json, os, subprocess, sys
-
-          repo = os.environ.get("GITHUB_REPOSITORY", "")
-          pr   = os.environ.get("PR_NUMBER", "")
-          token = os.environ.get("GH_TOKEN", "")
-
-          def gh(path):
-              cmd = ["gh", "api", path, "--paginate"]
-              r = subprocess.run(cmd, capture_output=True, text=True)
-              if r.returncode != 0:
-                  print("gh api error:", r.stderr, file=sys.stderr)
-                  return []
-              return json.loads(r.stdout)
-
-          def classify(path):
-              p = path.lower()
-              ext = p.rsplit(".", 1)[-1] if "." in p else ""
-              if p.startswith(("db/migrations/", "migrations/")) or ext == "sql":
-                  return "database-migration"
-              if p in ("api/openapi.yaml", "api/openapi.yml") or (p.startswith("api/") and ext == "proto"):
-                  return "api-contract"
-              if (p.startswith("src/") or ext in ("py", "go")) and ext in ("ts", "py", "go"):
-                  return "backend"
-              if p.startswith(("web/", "frontend/")) or ext in ("tsx", "css"):
-                  return "frontend"
-              if ext == "md" or p.startswith("docs/"):
-                  return "docs"
-              return "other"
-
-          files_raw = gh(f"repos/{repo}/pulls/{pr}/files")
-          files = [{"path": f["filename"], "type": classify(f["filename"])} for f in files_raw]
-          impacts = {}
-          for f in files:
-              t = f["type"]
-              if t == "database-migration":
-                  impacts["database"] = True
-                  impacts["requiresSeedData"] = True
-              elif t == "api-contract":
-                  impacts["apiContract"] = True
-                  impacts["requiresContractTests"] = True
-              elif t == "backend":
-                  impacts["backend"] = True
-                  impacts["requiresRegressionTests"] = True
-              elif t == "frontend":
-                  impacts["frontend"] = True
-
-          ctx = {"changedFiles": files, "detectedImpacts": impacts}
-          print("=== changeContext ===")
-          print(json.dumps(ctx, indent=2))
-          # Export as compact JSON for downstream steps
-          compact = json.dumps(ctx)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write(f"change_context={compact}\n")
-          print("=== impacts summary ===")
-          for k, v in impacts.items():
-              print(f"  {k}: {v}")
-          PYEOF
-        env:
-          GH_TOKEN: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-
-      - name: Comment changeContext on PR
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
-          script: |
-            const ctx = JSON.parse(process.env.CHANGE_CONTEXT);
-            const impacts = ctx.detectedImpacts;
-
-            const badge = (v) => v ? '✅' : '⬜';
-            const rows = ctx.changedFiles.map(f =>
-              `| \`${f.path}\` | \`${f.type}\` |`
-            ).join('\n');
-
-            const body = [
-              '## 🔍 Change Context',
-              '',
-              '| File | Type |',
-              '|------|------|',
-              rows,
-              '',
-              '### Detected Impacts',
-              `| Impact | Detected |`,
-              `|--------|----------|`,
-              `| Database migration | ${badge(impacts.database)} |`,
-              `| API contract change | ${badge(impacts.apiContract)} |`,
-              `| Backend change | ${badge(impacts.backend)} |`,
-              `| Frontend change | ${badge(impacts.frontend)} |`,
-              '',
-              impacts.requiresContractTests  ? '> ⚠️ Contract tests will run (API spec changed)' : '',
-              impacts.requiresRegressionTests ? '> ⚠️ Regression tests will run (backend changed)' : '',
-              impacts.requiresSeedData        ? '> ⚠️ Seed data required (DB migration detected)' : '',
-            ].filter(l => l !== undefined).join('\n');
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-            });
-
-            const existing = comments.find(c =>
-              c.user.login === 'github-actions[bot]' && c.body.startsWith('## 🔍 Change Context')
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body,
-              });
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          PR="${{ github.event.pull_request.number }}"
+          MSG="Analyze PR #${PR} in repository ${OWNER}/${REPO}. Owner: ${OWNER}, Repo: ${REPO}, PR number: ${PR}."
+          PAYLOAD=$(python3 -c "
+          import json, sys
+          msg = sys.argv[1]
+          run_id = sys.argv[2]
+          print(json.dumps({
+            'jsonrpc': '2.0',
+            'id': '1',
+            'method': 'message/send',
+            'params': {
+              'message': {
+                'role': 'user',
+                'messageId': 'diff-' + run_id,
+                'parts': [{'text': msg}]
+              }
             }
-        env:
-          CHANGE_CONTEXT: ${{ steps.classify.outputs.change_context }}
+          }))
+          " "$MSG" "${{ github.run_id }}")
+
+          echo "=== Triggering kagent preview-diff-analyzer ==="
+          echo "Input: ${MSG}"
+          echo ""
+
+          RESPONSE=$(curl -s -X POST \
+            "http://preview-diff-analyzer.kagent-system.svc.cluster.local:8080/" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            --max-time 120)
+
+          echo "=== kagent response ==="
+          echo "$RESPONSE" | python3 -c "
+          import json, sys
+          try:
+            d = json.load(sys.stdin)
+            result = d.get('result', {})
+            state = result.get('status', {}).get('state', 'unknown')
+            artifacts = result.get('artifacts', [])
+            print(f'Status: {state}')
+            for a in artifacts:
+              for part in a.get('parts', []):
+                if part.get('kind') == 'text':
+                  print(part['text'])
+          except Exception as e:
+            print('raw:', sys.stdin.read() if hasattr(sys.stdin, 'read') else str(e))
+          " || echo "$RESPONSE"
 
       - name: Create controller GitHub token secret
         run: |

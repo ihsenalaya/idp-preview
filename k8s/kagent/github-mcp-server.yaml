@@ -1,0 +1,69 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-mcp-server
+  namespace: kagent-system
+  labels:
+    app: github-mcp-server
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-mcp-server
+  template:
+    metadata:
+      labels:
+        app: github-mcp-server
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: github-mcp-server
+          image: ghcr.io/ihsenalaya/github-mcp-server:latest
+          ports:
+            - containerPort: 8812
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: preview-github-token
+                  key: token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-mcp-server
+  namespace: kagent-system
+  labels:
+    app: github-mcp-server
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  selector:
+    app: github-mcp-server
+  ports:
+    - port: 8812
+      targetPort: 8812
+---
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: github-mcp-server
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/component: kagent
+spec:
+  description: "GitHub MCP server — exposes PR diff and comment tools for kagent diff analysis."
+  url: "http://github-mcp-server.kagent-system.svc.cluster.local:8812/sse"
+  protocol: SSE
