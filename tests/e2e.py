@@ -145,12 +145,29 @@ def test_close_detail(page):
     assert not overlay.is_visible(), "detail overlay still visible after clicking close"
 
 
+def test_wishlist_toggle(page):
+    """Clicking the wishlist heart button marks it active."""
+    page.goto(BASE, wait_until="networkidle", timeout=30000)
+    page.locator('[data-testid="product-card"]').first.wait_for(state="visible", timeout=10000)
+
+    btn = page.locator('[data-testid="wishlist-btn"]').first
+    btn.wait_for(state="visible", timeout=8000)
+    btn.click()
+    page.wait_for_timeout(600)
+
+    toggle = page.locator('[data-testid="wishlist-toggle"]')
+    toggle.wait_for(state="visible", timeout=5000)
+    count_text = page.locator('[data-testid="wishlist-count"]').inner_text()
+    assert int(count_text) >= 1, f"wishlist count should be >= 1 after adding, got {count_text!r}"
+
+
 run("catalog_page_loads",    test_catalog_page_loads)
 run("preview_badge_shown",   test_preview_badge_shown)
 run("product_detail_panel",  test_product_detail_panel)
 run("related_section",       test_related_section)
 run("discount_filter",       test_discount_filter)
 run("close_detail",          test_close_detail)
+run("wishlist_toggle",       test_wishlist_toggle)
 
 print(f"Results: {passed} passed, {failed} failed")
 sys.exit(1 if failed > 0 else 0)

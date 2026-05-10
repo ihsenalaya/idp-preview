@@ -110,6 +110,22 @@
     .related-card .r-price{color:#7c3aed;font-weight:700;font-size:.88rem}
     .no-related{color:#cbd5e1;font-size:.85rem;font-style:italic}
     footer{text-align:center;color:#94a3b8;font-size:.78rem;padding:2rem}
+
+    /* Wishlist */
+    .wishlist-btn{background:none;border:1px solid #e2e8f0;border-radius:6px;
+      padding:.2rem .5rem;font-size:.85rem;cursor:pointer;color:#94a3b8;transition:all .15s;line-height:1}
+    .wishlist-btn:hover,.wishlist-btn.active{color:#e11d48;border-color:#fda4af;background:#fff1f2}
+    .wishlist-count{background:#e11d48;color:#fff;border-radius:999px;
+      font-size:.7rem;padding:.1rem .4rem;font-weight:700;margin-left:.3rem;display:inline-block}
+    .wishlist-section{margin-top:1.5rem}
+    .wishlist-empty{color:#cbd5e1;font-style:italic;font-size:.88rem;padding:.5rem 0}
+    .wishlist-item{display:flex;justify-content:space-between;align-items:center;
+      padding:.5rem 0;border-bottom:1px solid #f1f5f9;font-size:.88rem}
+    .wishlist-item:last-child{border-bottom:none}
+    .wl-name{font-weight:600}
+    .wl-price{color:#7c3aed;font-weight:700}
+    .wl-remove{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:.9rem;padding:.2rem}
+    .wl-remove:hover{color:#e11d48}
   </style>
 </head>
 <body>
@@ -127,6 +143,13 @@
   <div>
     <h1>🛒 Cellenza — Catalogue Demo</h1>
     <p>Preview environment · PostgreSQL · OpenTelemetry · AI Enrichment · Test Suite</p>
+  </div>
+  <div>
+    <button data-testid="wishlist-toggle" onclick="toggleWishlistPanel()"
+            style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);
+                   color:#fff;border-radius:6px;padding:.45rem 1rem;cursor:pointer;font-size:.85rem">
+      ♥ Liste de souhaits<span class="wishlist-count" id="wl-count" data-testid="wishlist-count">0</span>
+    </button>
   </div>
 </header>
 
@@ -216,11 +239,21 @@
           {% if p.avg_rating %}
           <div class="stars">{{ p.avg_rating }}★ <span class="rev-count">({{ p.review_count }} avis)</span></div>
           {% endif %}
+          <button class="wishlist-btn" data-testid="wishlist-btn" data-product-id="{{ p.id }}"
+                  onclick="event.stopPropagation();toggleWishlist({{ p.id }}, this)">♥</button>
         </div>
         {% endfor %}
       {% else %}
         <p class="empty">Aucun produit — ajoutez-en un ou attendez que l'IA enrichisse la preview.</p>
       {% endif %}
+    </div>
+  </div>
+
+  <!-- Wishlist panel -->
+  <div class="card" id="wishlist-panel" data-testid="wishlist-panel" style="display:none">
+    <h2>♥ Liste de souhaits</h2>
+    <div class="wishlist-section" id="wishlist-items" data-testid="wishlist-items">
+      <p class="wishlist-empty">Votre liste de souhaits est vide.</p>
     </div>
   </div>
 
@@ -259,6 +292,71 @@
 </div>
 
 <script>
+  const WL_USER = 'preview-demo-user';
+  let wishlistIds = new Set();
+
+  async function loadWishlist() {
+    try {
+      const r = await fetch(`/api/wishlist?user_id=${WL_USER}`);
+      const data = await r.json();
+      // NOTE: server returns {wishlist, total} but we read {items, count} per spec
+      const items = data.items || data.wishlist || [];
+      wishlistIds = new Set(items.map(i => i.product_id));
+      document.getElementById('wl-count').textContent = items.length;
+      renderWishlistItems(items);
+    } catch(e) { console.warn('wishlist load failed', e); }
+  }
+
+  function renderWishlistItems(items) {
+    const el = document.getElementById('wishlist-items');
+    if (!el) return;
+    if (!items.length) {
+      el.innerHTML = '<p class="wishlist-empty">Votre liste de souhaits est vide.</p>';
+    } else {
+      el.innerHTML = items.map(i =>
+        `<div class="wishlist-item" data-testid="wishlist-item">
+          <div><span class="wl-name">${i.product_name}</span></div>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <span class="wl-price">${parseFloat(i.price).toFixed(2)} €</span>
+            <button class="wl-remove" data-testid="wishlist-remove"
+                    onclick="removeWishlist(${i.id}, ${i.product_id})">✕</button>
+          </div>
+        </div>`
+      ).join('');
+    }
+  }
+
+  async function toggleWishlist(productId, btn) {
+    if (wishlistIds.has(productId)) {
+      btn.classList.remove('active');
+    } else {
+      try {
+        await fetch('/api/wishlist', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({user_id: WL_USER, product_id: productId})});
+        btn.classList.add('active');
+      } catch(e) { console.warn('add wishlist failed', e); }
+    }
+    loadWishlist();
+  }
+
+  async function removeWishlist(id, productId) {
+    try {
+      await fetch(`/api/wishlist/${id}`, {method:'DELETE'});
+      wishlistIds.delete(productId);
+      document.querySelectorAll(`[data-product-id="${productId}"].wishlist-btn`)
+        .forEach(b => b.classList.remove('active'));
+    } catch(e) { console.warn('remove wishlist failed', e); }
+    loadWishlist();
+  }
+
+  function toggleWishlistPanel() {
+    const panel = document.getElementById('wishlist-panel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  }
+
+  loadWishlist();
+
   // Refresh count badge
   function updateCount(n) {
     const el = document.getElementById('product-count');
@@ -303,6 +401,7 @@
       const discBadge = disc > 0
         ? `<span class="disc-badge ${disc >= 30 ? 'high' : ''}" data-testid="product-discount">-${Math.round(disc)}%</span>`
         : '';
+      const wlActive = wishlistIds.has(p.id) ? 'active' : '';
       return `<div class="prod-card" data-testid="product-card" data-product-id="${p.id}" onclick="openDetail(${p.id})">
         <div class="prod-cat">${p.category_name || 'Non classé'}</div>
         <div class="prod-name" data-testid="product-name">${p.name}</div>
@@ -310,6 +409,8 @@
         <div class="prod-foot">
           <span class="prod-price" data-testid="product-price">${final.toFixed(2)} € ${discBadge}</span>
         </div>
+        <button class="wishlist-btn ${wlActive}" data-testid="wishlist-btn" data-product-id="${p.id}"
+                onclick="event.stopPropagation();toggleWishlist(${p.id}, this)">♥</button>
       </div>`;
     }).join('');
   }

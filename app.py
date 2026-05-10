@@ -67,10 +67,19 @@ def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS wishlists (
+            id         SERIAL PRIMARY KEY,
+            user_id    TEXT    NOT NULL,
+            product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+            added_at   TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (user_id, product_id)
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
-    log("Schema ready", tables="categories,products,reviews,orders")
+    log("Schema ready", tables="categories,products,reviews,orders,wishlists")
 
 
 def fetch_all_dicts(cur):
@@ -465,12 +474,80 @@ def api_related_products(product_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/wishlist", methods=["GET"])
+def api_get_wishlist():
+    user_id = request.args.get("user_id", "anonymous")
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT w.id, w.product_id, p.name AS product_name,
+                   p.price, p.discount_pct, w.added_at
+            FROM wishlists w
+            JOIN products p ON p.id = w.product_id
+            WHERE w.user_id = %s
+            ORDER BY w.added_at DESC
+        """, (user_id,))
+        rows = fetch_all_dicts(cur)
+        cur.close(); conn.close()
+        for r in rows:
+            r["price"]        = float(r["price"])
+            r["discount_pct"] = float(r["discount_pct"] or 0)
+            r["added_at"]     = r["added_at"].isoformat()
+        # BUG: field names don't match the OpenAPI spec — spec expects "items"/"count"
+        return jsonify({"wishlist": rows, "total": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wishlist", methods=["POST"])
+def api_add_to_wishlist():
+    data       = request.get_json(silent=True) or {}
+    user_id    = str(data.get("user_id", "anonymous"))[:100]
+    product_id = data.get("product_id")
+    if not product_id:
+        return jsonify({"error": "product_id is required"}), 400
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT id FROM products WHERE id=%s", (product_id,))
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"error": "product not found"}), 404
+        cur.execute(
+            "INSERT INTO wishlists (user_id, product_id) VALUES (%s, %s) "
+            "ON CONFLICT ON CONSTRAINT wishlists_unique_user_product DO NOTHING "
+            "RETURNING id, added_at",
+            (user_id, product_id)
+        )
+        row = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        if not row:
+            return jsonify({"message": "already in wishlist"}), 200
+        return jsonify({"id": row[0], "user_id": user_id,
+                        "product_id": product_id, "added_at": row[1].isoformat()}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wishlist/<int:wishlist_id>", methods=["DELETE"])
+def api_remove_from_wishlist(wishlist_id):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("DELETE FROM wishlists WHERE id=%s RETURNING id", (wishlist_id,))
+        deleted = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        if not deleted:
+            return jsonify({"error": "not found"}), 404
+        return "", 204
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.1",
+        "version":  "1.2.0",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "wishlist"]
     })
 
 

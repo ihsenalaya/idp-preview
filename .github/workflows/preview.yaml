@@ -161,6 +161,8 @@ jobs:
             testSuite:
               enabled: true
               smoke: {}
+              migration:
+                enabled: true
               contractTesting:
                 enabled: true
                 microcksURL: http://microcks.microcks.svc.cluster.local:8080
@@ -177,10 +179,17 @@ jobs:
                 name: ai-api-key
                 key: api-key
               model: gpt-4o-mini
+            testStrategy:
+              mode: Auto
+              confidenceThreshold: 70
+              agentTimeoutSeconds: 300
+              fallbackOnAgentTimeout: Full
             kagent:
               enabled: true
               namespace: kagent-system
               agentName: preview-troubleshooter-agent
+              diffAnalyzerAgentName: preview-diff-analyzer
+              testStrategistAgentName: test-strategist-agent
             github:
               enabled: true
               owner: ${{ github.repository_owner }}

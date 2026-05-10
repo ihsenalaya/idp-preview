@@ -427,6 +427,99 @@ paths:
                     created_at: '2026-05-01T11:00:00+00:00'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/wishlist:
+    get:
+      operationId: getWishlist
+      summary: Get wishlist items for a user
+      tags:
+      - Wishlist
+      parameters:
+      - name: user_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: anonymous
+        description: User identifier
+      responses:
+        '200':
+          description: User wishlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistResponse'
+              examples:
+                Example_1:
+                  value:
+                    items:
+                    - id: 1
+                      product_id: 3
+                      product_name: Wireless Headphones
+                      price: 199.99
+                      discount_pct: 10.0
+                      added_at: '2026-05-10T12:00:00+00:00'
+                    count: 1
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: addToWishlist
+      summary: Add a product to the wishlist
+      tags:
+      - Wishlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WishlistAdd'
+            examples:
+              Example_1:
+                value:
+                  user_id: testuser
+                  product_id: 1
+      responses:
+        '201':
+          description: Item added to wishlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistItem'
+        '200':
+          description: Item already in wishlist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/InternalError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/wishlist/{id}:
+    delete:
+      operationId: removeFromWishlist
+      summary: Remove an item from the wishlist
+      tags:
+      - Wishlist
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        description: Wishlist entry identifier
+      responses:
+        '204':
+          description: Item removed
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/stats:
     get:
       operationId: getStats
@@ -866,6 +959,58 @@ components:
           type: array
           items:
             type: string
+    WishlistItem:
+      type: object
+      required:
+      - id
+      - product_id
+      - product_name
+      - price
+      - discount_pct
+      - added_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        product_id:
+          type: integer
+          minimum: 1
+        product_name:
+          type: string
+        price:
+          type: number
+          format: float
+        discount_pct:
+          type: number
+          format: float
+        added_at:
+          type: string
+          format: date-time
+    WishlistResponse:
+      type: object
+      required:
+      - items
+      - count
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WishlistItem'
+        count:
+          type: integer
+          minimum: 0
+    WishlistAdd:
+      type: object
+      required:
+      - product_id
+      properties:
+        user_id:
+          type: string
+          maxLength: 100
+          default: anonymous
+        product_id:
+          type: integer
+          minimum: 1
     ErrorResponse:
       type: object
       required:
@@ -887,3 +1032,5 @@ tags:
   description: Order placement
 - name: Stats
   description: Aggregated platform statistics
+- name: Wishlist
+  description: User product wishlist

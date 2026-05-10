@@ -34,6 +34,9 @@ tests = [
     ("discounted_with_filter","GET",BASE + "/api/products/discounted?min_discount=50",200, None),
     ("related_products",   "GET", BASE + f"/api/products/{_pid}/related",          200, lambda r: isinstance(r.json().get("products", r.json()), list)),
     ("related_invalid",    "GET", BASE + "/api/products/99999/related",            404, None),
+    # wishlist endpoint — spec requires {"items": [...], "count": N}
+    ("wishlist_get",       "GET", BASE + "/api/wishlist?user_id=testuser",         200,
+     lambda r: "items" in r.json() and "count" in r.json()),
 ]
 
 passed = 0
