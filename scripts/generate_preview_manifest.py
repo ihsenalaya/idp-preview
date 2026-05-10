@@ -123,9 +123,10 @@ def main():
     # Build diffPatch block (literal block scalar, indented 6 spaces under changeContext)
     diff_patch_yaml = ""
     if patch.strip():
-        lines = ["      diffPatch: |"]
+        # 4 spaces: same level as detectedImpacts (child of changeContext, not detectedImpacts)
+        lines = ["    diffPatch: |"]
         for line in patch.splitlines():
-            lines.append("        " + line)
+            lines.append("      " + line)
         diff_patch_yaml = "\n".join(lines)
 
     manifest = f"""\
