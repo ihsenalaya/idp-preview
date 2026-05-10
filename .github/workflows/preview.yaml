@@ -120,8 +120,38 @@ jobs:
             --from-literal=token='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Classify diff and generate changeContext
+        id: classify
+        run: |
+          # Fetch full history so git diff can see both base and head.
+          git fetch --unshallow 2>/dev/null || true
+          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || true
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+
+          CHANGE_CONTEXT=$(python3 scripts/generate_preview_manifest.py \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --agent-timeout-seconds 120)
+
+          # Store as multiline env var for next step.
+          {
+            echo "CHANGE_CONTEXT<<CHANGE_CONTEXT_EOF"
+            echo "$CHANGE_CONTEXT"
+            echo "CHANGE_CONTEXT_EOF"
+          } >> "$GITHUB_ENV"
+
+          echo "=== changeContext + testStrategy ==="
+          echo "$CHANGE_CONTEXT"
+
       - name: Apply Preview manifest
         run: |
+          # Indent changeContext/testStrategy fields by 4 spaces to nest under spec:
+          INDENTED_CONTEXT=$(echo "$CHANGE_CONTEXT" | sed 's/^/    /')
+
           kubectl apply -f - <<EOF
           apiVersion: platform.company.io/v1alpha1
           kind: Preview
@@ -192,6 +222,7 @@ jobs:
                 name: ${CONTROLLER_GITHUB_TOKEN_SECRET}
                 namespace: preview-operator-system
                 key: token
+          $INDENTED_CONTEXT
           EOF
 
       - name: Wait for Preview to be ready
