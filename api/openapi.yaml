@@ -427,6 +427,45 @@ paths:
                     created_at: '2026-05-01T11:00:00+00:00'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/orders/{id}:
+    get:
+      operationId: getOrder
+      summary: Get a specific order by ID
+      tags:
+      - Orders
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderDetail'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    product_id: 1
+                    product_name: Wireless Headphones
+                    quantity: 2
+                    status: pending
+                    notes: null
+                    created_at: '2026-05-01T11:00:00+00:00'
+        '404':
+          description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: order not found
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/stats:
     get:
       operationId: getStats
@@ -824,6 +863,35 @@ components:
           minimum: 1
         status:
           type: string
+        created_at:
+          type: string
+          format: date-time
+    OrderDetail:
+      type: object
+      required:
+      - id
+      - product_id
+      - quantity
+      - status
+      - created_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        product_id:
+          type: integer
+          nullable: true
+        product_name:
+          type: string
+          nullable: true
+        quantity:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+        notes:
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time

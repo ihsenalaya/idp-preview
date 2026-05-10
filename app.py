@@ -325,6 +325,28 @@ def api_create_order():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/orders/<int:order_id>", methods=["GET"])
+def api_get_order(order_id):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT o.id, o.product_id, p.name AS product_name,
+                   o.quantity, o.status, o.notes, o.created_at
+            FROM orders o LEFT JOIN products p ON p.id=o.product_id
+            WHERE o.id=%s
+        """, (order_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "order not found"}), 404
+        cols = ["id", "product_id", "product_name", "quantity", "status", "notes", "created_at"]
+        result = dict(zip(cols, row))
+        result["created_at"] = result["created_at"].isoformat()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/orders", methods=["GET"])
 def api_list_orders():
     try:

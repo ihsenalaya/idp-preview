@@ -108,6 +108,73 @@ jobs:
             });
             return deployment.data.id;
 
+      - name: Classify PR diff (changeContext)
+        id: classify
+        env:
+          GH_TOKEN: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          pr   = os.environ.get("PR_NUMBER", "")
+          token = os.environ.get("GH_TOKEN", "")
+
+          def gh(path):
+              cmd = ["gh", "api", path, "--paginate"]
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              if r.returncode != 0:
+                  print("gh api error:", r.stderr, file=sys.stderr)
+                  return []
+              return json.loads(r.stdout)
+
+          def classify(path):
+              p = path.lower()
+              ext = p.rsplit(".", 1)[-1] if "." in p else ""
+              if p.startswith("db/migrations/") or ext == "sql":
+                  return "database-migration"
+              if p in ("api/openapi.yaml", "api/openapi.yml") or (p.startswith("api/") and ext == "proto"):
+                  return "api-contract"
+              if p.startswith("src/") and ext in ("ts", "py", "go"):
+                  return "backend"
+              if p.startswith(("web/", "frontend/")) or ext in ("tsx", "css"):
+                  return "frontend"
+              if ext == "md" or p.startswith("docs/"):
+                  return "docs"
+              return "other"
+
+          files_raw = gh(f"repos/{repo}/pulls/{pr}/files")
+          files = [{"path": f["filename"], "type": classify(f["filename"])} for f in files_raw]
+          impacts = {}
+          for f in files:
+              t = f["type"]
+              if t == "database-migration":
+                  impacts["database"] = True
+                  impacts["requiresSeedData"] = True
+              elif t == "api-contract":
+                  impacts["apiContract"] = True
+                  impacts["requiresContractTests"] = True
+              elif t == "backend":
+                  impacts["backend"] = True
+                  impacts["requiresRegressionTests"] = True
+              elif t == "frontend":
+                  impacts["frontend"] = True
+
+          ctx = {"changedFiles": files, "detectedImpacts": impacts}
+          print("=== changeContext ===")
+          print(json.dumps(ctx, indent=2))
+          # Export as compact JSON for downstream steps
+          compact = json.dumps(ctx)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"change_context={compact}\n")
+          print("=== impacts summary ===")
+          for k, v in impacts.items():
+              print(f"  {k}: {v}")
+          PYEOF
+        env:
+          GH_TOKEN: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
       - name: Create controller GitHub token secret
         run: |
           if [ -z '${{ secrets.PREVIEW_GITHUB_TOKEN }}' ]; then
