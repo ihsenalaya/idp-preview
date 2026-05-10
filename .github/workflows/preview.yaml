@@ -173,6 +173,67 @@ jobs:
           GH_TOKEN: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
+      - name: Comment changeContext on PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
+          script: |
+            const ctx = JSON.parse(process.env.CHANGE_CONTEXT);
+            const impacts = ctx.detectedImpacts;
+
+            const badge = (v) => v ? '✅' : '⬜';
+            const rows = ctx.changedFiles.map(f =>
+              `| \`${f.path}\` | \`${f.type}\` |`
+            ).join('\n');
+
+            const body = [
+              '## 🔍 Change Context',
+              '',
+              '| File | Type |',
+              '|------|------|',
+              rows,
+              '',
+              '### Detected Impacts',
+              `| Impact | Detected |`,
+              `|--------|----------|`,
+              `| Database migration | ${badge(impacts.database)} |`,
+              `| API contract change | ${badge(impacts.apiContract)} |`,
+              `| Backend change | ${badge(impacts.backend)} |`,
+              `| Frontend change | ${badge(impacts.frontend)} |`,
+              '',
+              impacts.requiresContractTests  ? '> ⚠️ Contract tests will run (API spec changed)' : '',
+              impacts.requiresRegressionTests ? '> ⚠️ Regression tests will run (backend changed)' : '',
+              impacts.requiresSeedData        ? '> ⚠️ Seed data required (DB migration detected)' : '',
+            ].filter(l => l !== undefined).join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' && c.body.startsWith('## 🔍 Change Context')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+            }
+        env:
+          CHANGE_CONTEXT: ${{ steps.classify.outputs.change_context }}
+
       - name: Create controller GitHub token secret
         run: |
           if [ -z '${{ secrets.PREVIEW_GITHUB_TOKEN }}' ]; then
