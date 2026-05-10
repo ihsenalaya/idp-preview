@@ -468,10 +468,40 @@ def api_related_products(product_id):
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.1",
+        "version":  "1.0.2",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "product-search"]
     })
+
+
+@app.route("/api/products/search", methods=["GET"])
+def search_products():
+    """Search products by name or category keyword."""
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"error": "query parameter 'q' is required"}), 400
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, price, category, stock
+            FROM products
+            WHERE name ILIKE %s OR category ILIKE %s
+            ORDER BY name
+            LIMIT 50
+            """,
+            (f"%{query}%", f"%{query}%"),
+        )
+        rows = cur.fetchall()
+        results = [
+            {"id": r[0], "name": r[1], "price": float(r[2]), "category": r[3], "stock": r[4]}
+            for r in rows
+        ]
+        return jsonify({"query": query, "count": len(results), "results": results})
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
