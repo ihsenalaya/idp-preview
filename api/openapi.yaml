@@ -344,6 +344,68 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/payments:
+    post:
+      operationId: createPayment
+      summary: Initiate a payment for an order
+      tags:
+      - Payments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, amount, provider]
+              properties:
+                order_id:
+                  type: integer
+                amount:
+                  type: number
+                currency:
+                  type: string
+                  default: EUR
+                provider:
+                  type: string
+                  enum: [stripe, paypal]
+      responses:
+        '201':
+          description: Payment initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '404':
+          description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/payments/{id}:
+    get:
+      operationId: getPayment
+      summary: Get payment status
+      tags:
+      - Payments
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Payment detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '404':
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/orders:
     post:
       operationId: createOrder
@@ -934,6 +996,32 @@ components:
           type: array
           items:
             type: string
+    Payment:
+      type: object
+      properties:
+        id:
+          type: integer
+        order_id:
+          type: integer
+        amount:
+          type: number
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, failed, refunded]
+        provider:
+          type: string
+        provider_ref:
+          type: string
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       required:
@@ -953,5 +1041,7 @@ tags:
   description: Product reviews
 - name: Orders
   description: Order placement
+- name: Payments
+  description: Payment processing
 - name: Stats
   description: Aggregated platform statistics

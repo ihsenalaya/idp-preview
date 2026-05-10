@@ -365,6 +365,54 @@ def api_list_orders():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/payments", methods=["POST"])
+def api_create_payment():
+    try:
+        data = request.get_json() or {}
+        order_id = data.get("order_id")
+        amount   = data.get("amount")
+        currency = data.get("currency", "EUR")
+        provider = data.get("provider")
+        if not order_id or not amount or not provider:
+            return jsonify({"error": "order_id, amount and provider are required"}), 400
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT id FROM orders WHERE id=%s", (order_id,))
+        if not cur.fetchone():
+            return jsonify({"error": "order not found"}), 404
+        cur.execute("""
+            INSERT INTO payments (order_id, amount, currency, provider)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, order_id, amount, currency, status, provider, provider_ref, paid_at, created_at
+        """, (order_id, amount, currency, provider))
+        row = dict(zip([d[0] for d in cur.description], cur.fetchone()))
+        conn.commit(); cur.close(); conn.close()
+        row["created_at"] = row["created_at"].isoformat() if row["created_at"] else None
+        row["paid_at"]    = row["paid_at"].isoformat() if row["paid_at"] else None
+        return jsonify(row), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/payments/<int:payment_id>", methods=["GET"])
+def api_get_payment(payment_id):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT id, order_id, amount, currency, status, provider, provider_ref, paid_at, created_at
+            FROM payments WHERE id=%s
+        """, (payment_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "payment not found"}), 404
+        result = dict(zip([d[0] for d in cur.description], row))
+        result["created_at"] = result["created_at"].isoformat() if result["created_at"] else None
+        result["paid_at"]    = result["paid_at"].isoformat() if result["paid_at"] else None
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
     try:
