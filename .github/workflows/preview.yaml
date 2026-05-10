@@ -133,7 +133,8 @@ jobs:
             image: ${IMAGE}
             resourceTier: medium
             ttl: 48h
-            testStrategy: ai
+            testStrategy:
+              mode: Auto
             services:
               - name: backend
                 image: ${IMAGE}
