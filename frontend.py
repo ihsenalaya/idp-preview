@@ -52,9 +52,9 @@ def index(path):
   <style>
     *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
     :root{{
-      --bg:#f1f5f9;--surface:#fff;--border:#e2e8f0;
+      --bg:#f0fdf4;--surface:#fff;--border:#d1fae5;
       --text:#1e293b;--muted:#64748b;--muted2:#94a3b8;
-      --purple:#7c3aed;--purple-light:#ede9fe;
+      --purple:#059669;--purple-light:#d1fae5;
       --green:#16a34a;--green-light:#dcfce7;
       --orange:#ea580c;--orange-light:#ffedd5;
       --red:#dc2626;--red-light:#fee2e2;
