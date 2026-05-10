@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--json-report",
+    "--json-report-file=test-reports/pytest-report.json",
+    "-v",
+    "--tb=short",
+]
+markers = [
+    "requires_db: tests that need a live DATABASE_URL",
+    "requires_api: tests that need a running API server",
+    "kagent_demo: tests intentionally failing to trigger kagent AI analysis",
+]

@@ -1,4 +1,7 @@
 import os
+import json
+import uuid
+import datetime
 import psycopg2
 from flask import Flask, request, jsonify
 
@@ -18,8 +21,42 @@ POSTGRES_USER = os.environ.get("POSTGRES_USER", "")
 
 
 def log(message, **fields):
-    details = " ".join(f"{k}={v}" for k, v in fields.items() if v)
-    print(f"[db] {message}" + (f" {details}" if details else ""), flush=True)
+    if os.environ.get("LOG_FORMAT") == "json":
+        record = {"ts": datetime.datetime.utcnow().isoformat(), "msg": message}
+        record.update(fields)
+        print(json.dumps(record), flush=True)
+    else:
+        details = " ".join(f"{k}={v}" for k, v in fields.items() if v)
+        print(f"[db] {message}" + (f" {details}" if details else ""), flush=True)
+
+
+# ── Pure business-logic functions (testable without DB) ──────────────────────
+
+def calculate_discounted_price(price: float, discount_pct: float) -> float:
+    """Apply percentage discount to a unit price. Returns value rounded to 2dp."""
+    if discount_pct < 0 or discount_pct > 100:
+        raise ValueError(f"discount_pct must be 0–100, got {discount_pct}")
+    return round(price * (1 - discount_pct / 100), 2)
+
+
+def calculate_order_total(price: float, discount_pct: float, quantity: int) -> float:
+    """Return the total cost for quantity units after applying the discount."""
+    if quantity < 1:
+        raise ValueError(f"quantity must be >= 1, got {quantity}")
+    unit = calculate_discounted_price(price, discount_pct)
+    return round(unit * quantity, 2)
+
+
+def apply_vat(amount: float, rate: float = 0.20) -> float:
+    """Add VAT at the given rate (default 20 %). Result rounded to 2dp."""
+    if rate < 0:
+        raise ValueError(f"VAT rate must be >= 0, got {rate}")
+    return round(amount * (1 + rate), 2)
+
+
+def validate_stock(available: int, requested: int) -> bool:
+    """Return True if sufficient stock exists for the order."""
+    return available >= requested and requested >= 1
 
 
 def get_conn():
@@ -60,17 +97,29 @@ def init_db():
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
-            id         SERIAL PRIMARY KEY,
-            product_id INTEGER REFERENCES products(id),
-            quantity   INTEGER NOT NULL DEFAULT 1,
-            status     TEXT    NOT NULL DEFAULT 'pending',
-            created_at TIMESTAMPTZ DEFAULT NOW()
+            id            SERIAL PRIMARY KEY,
+            product_id    INTEGER REFERENCES products(id),
+            quantity      INTEGER NOT NULL DEFAULT 1,
+            status        TEXT    NOT NULL DEFAULT 'pending',
+            discount_code TEXT,
+            created_at    TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id             SERIAL PRIMARY KEY,
+            order_id       INTEGER REFERENCES orders(id),
+            amount         NUMERIC(10,2) NOT NULL,
+            method         TEXT NOT NULL DEFAULT 'card',
+            transaction_id TEXT UNIQUE,
+            status         TEXT NOT NULL DEFAULT 'completed',
+            created_at     TIMESTAMPTZ DEFAULT NOW()
         )
     """)
     conn.commit()
     cur.close()
     conn.close()
-    log("Schema ready", tables="categories,products,reviews,orders")
+    log("Schema ready", tables="categories,products,reviews,orders,payments")
 
 
 def fetch_all_dicts(cur):
@@ -81,6 +130,19 @@ def fetch_all_dicts(cur):
 @app.route("/healthz")
 def healthz():
     return "ok", 200
+
+
+@app.route("/readyz")
+def readyz():
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        return "ready", 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @app.route("/ping")
@@ -337,6 +399,64 @@ def api_list_orders():
         rows = fetch_all_dicts(cur)
         cur.close(); conn.close()
         for r in rows:
+            r["created_at"] = r["created_at"].isoformat()
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/payments", methods=["POST"])
+def api_create_payment():
+    """Process a payment for an existing order via the fake PSP."""
+    data     = request.get_json(silent=True) or {}
+    order_id = data.get("order_id")
+    amount   = data.get("amount")
+    method   = str(data.get("method", "card"))[:20]
+
+    if not order_id or amount is None:
+        return jsonify({"error": "order_id and amount are required"}), 400
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT id, status FROM orders WHERE id=%s", (order_id,))
+        order = cur.fetchone()
+        if not order:
+            cur.close(); conn.close()
+            return jsonify({"error": "order not found"}), 404
+
+        txn_id = str(uuid.uuid4())
+        cur.execute("""
+            INSERT INTO payments (order_id, amount, method, transaction_id, status)
+            VALUES (%s, %s, %s, %s, 'completed')
+            RETURNING id, order_id, amount, method, transaction_id, status, created_at
+        """, (order_id, amount, method, txn_id))
+        r = cur.fetchone()
+        cur.execute("UPDATE orders SET status='paid' WHERE id=%s", (order_id,))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({
+            "id":             r[0],
+            "order_id":       r[1],
+            "amount":         float(r[2]),
+            "method":         r[3],
+            "transaction_id": r[4],
+            "status":         r[5],
+            "created_at":     r[6].isoformat(),
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/payments", methods=["GET"])
+def api_list_payments():
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT id, order_id, amount, method, transaction_id, status, created_at
+            FROM payments ORDER BY created_at DESC LIMIT 50
+        """)
+        rows = fetch_all_dicts(cur)
+        cur.close(); conn.close()
+        for r in rows:
+            r["amount"]     = float(r["amount"])
             r["created_at"] = r["created_at"].isoformat()
         return jsonify(rows)
     except Exception as e:

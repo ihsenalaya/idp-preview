@@ -1,0 +1,21 @@
+detectedImpacts:
+  - api_contract
+  - unit
+
+changedFiles:
+  - api/openapi.yaml
+  - app.py
+
+testSelection:
+  suites:
+    - unit
+    - contract
+  reason: >
+    Changes detected in api/openapi.yaml and app.py — running unit tests and
+    contract tests to validate the API schema remains consistent with the implementation.
+
+metadata:
+  pr: "42"
+  branch: "feat/add-payments-endpoint"
+  commit: "abc1234"
+  triggeredBy: "idp-preview-operator"

@@ -1,0 +1,25 @@
+detectedImpacts:
+  - database_migration
+  - regression
+  - api_contract
+
+changedFiles:
+  - migrations/versions/002_add_payments.py
+  - migrations/versions/003_add_discount_code.py
+  - app.py
+
+testSelection:
+  suites:
+    - unit
+    - migration
+    - regression
+    - contract
+  reason: >
+    New Alembic migration files detected — running full migration test suite plus
+    regression tests to ensure the schema change does not break existing behaviour.
+
+metadata:
+  pr: "43"
+  branch: "feat/payments-migration"
+  commit: "def5678"
+  triggeredBy: "idp-preview-operator"

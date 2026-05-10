@@ -1,0 +1,55 @@
+{
+  "created": 1717000000.0,
+  "duration": 12.34,
+  "exitcode": 1,
+  "root": "/home/runner/work/idp-preview",
+  "environment": {
+    "Python": "3.11.9",
+    "Platform": "linux"
+  },
+  "summary": {
+    "passed": 28,
+    "failed": 2,
+    "skipped": 3,
+    "total": 33,
+    "collected": 33
+  },
+  "tests": [
+    {
+      "nodeid": "tests/unit/test_pricing.py::test_zero_discount_returns_original_price",
+      "outcome": "passed",
+      "duration": 0.001,
+      "markers": ["unit"]
+    },
+    {
+      "nodeid": "tests/unit/test_pricing.py::test_ten_percent_discount",
+      "outcome": "passed",
+      "duration": 0.001,
+      "markers": ["unit"]
+    },
+    {
+      "nodeid": "tests/regression/test_order_total_includes_discount.py::test_order_response_includes_total_price",
+      "outcome": "failed",
+      "duration": 0.23,
+      "markers": ["requires_api", "kagent_demo"],
+      "call": {
+        "longrepr": "AssertionError: Order response missing 'total_price' field — API must return the computed total including any discount\nassert 'total_price' in {'id': 1, 'product_id': 5, 'quantity': 2, 'status': 'pending'}"
+      }
+    },
+    {
+      "nodeid": "tests/regression/test_payment_idempotency.py::test_duplicate_payment_returns_409",
+      "outcome": "failed",
+      "duration": 0.41,
+      "markers": ["requires_api", "kagent_demo"],
+      "call": {
+        "longrepr": "AssertionError: Expected 409 for duplicate payment on order 1, got 201: {'transaction_id': 'txn-abc-def-ghi', 'order_id': 1, 'amount': 99.99}"
+      }
+    },
+    {
+      "nodeid": "tests/migration/test_migrations.py::test_migration_001_creates_base_tables",
+      "outcome": "skipped",
+      "duration": 0.001,
+      "markers": ["requires_db"]
+    }
+  ]
+}

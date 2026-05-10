@@ -427,6 +427,89 @@ paths:
                     created_at: '2026-05-01T11:00:00+00:00'
         '500':
           $ref: '#/components/responses/InternalError'
+  /readyz:
+    get:
+      operationId: readinessCheck
+      summary: Readiness probe — checks DB connectivity
+      tags:
+      - Health
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+              examples:
+                Example_1:
+                  value:
+                    status: ok
+        '503':
+          description: Service not ready (DB unreachable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/payments:
+    get:
+      operationId: listPayments
+      summary: List last 50 payments
+      tags:
+      - Payments
+      responses:
+        '200':
+          description: Array of payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createPayment
+      summary: Create a payment for an order
+      tags:
+      - Payments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreate'
+            examples:
+              Example_1:
+                value:
+                  order_id: 1
+                  amount: 99.99
+                  method: card
+      responses:
+        '201':
+          description: Payment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+              examples:
+                Example_1:
+                  value:
+                    id: 1
+                    order_id: 1
+                    transaction_id: txn-abc-def-123
+                    amount: 99.99
+                    method: card
+                    created_at: '2026-05-10T12:00:00+00:00'
+        '400':
+          $ref: '#/components/responses/NotFound'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/stats:
     get:
       operationId: getStats
@@ -866,6 +949,47 @@ components:
           type: array
           items:
             type: string
+    PaymentCreate:
+      type: object
+      required:
+      - order_id
+      - amount
+      properties:
+        order_id:
+          type: integer
+          minimum: 1
+        amount:
+          type: number
+          format: float
+          minimum: 0
+        method:
+          type: string
+          enum: [card, bank_transfer, crypto]
+          default: card
+    PaymentResponse:
+      type: object
+      required:
+      - id
+      - order_id
+      - transaction_id
+      - amount
+      - method
+      - created_at
+      properties:
+        id:
+          type: integer
+        order_id:
+          type: integer
+        transaction_id:
+          type: string
+        amount:
+          type: number
+          format: float
+        method:
+          type: string
+        created_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       required:
@@ -885,5 +1009,7 @@ tags:
   description: Product reviews
 - name: Orders
   description: Order placement
+- name: Payments
+  description: Payment processing
 - name: Stats
   description: Aggregated platform statistics
