@@ -27,14 +27,16 @@ GH_TOKEN    = os.environ.get("GH_TOKEN", "")
 
 def classify(path):
     if re.search(r"migrations/versions/", path):
-        return "migration"
+        return "database-migration"
     if re.search(r"api/openapi\.yaml", path):
-        return "contract"
+        return "api-contract"
     if re.search(r"frontend\.py|templates/|static/", path):
         return "frontend"
     if re.search(r"app\.py|tests/", path):
         return "backend"
-    return "config"
+    if re.search(r"README|\.md$|docs/", path):
+        return "docs"
+    return "other"
 
 
 def fetch_changed_files():
