@@ -200,21 +200,28 @@ jobs:
 
       - name: Wait for Preview to be ready
         run: |
-          for i in $(seq 1 30); do
+          CONSECUTIVE_FAILURES=0
+          for i in $(seq 1 40); do
             PHASE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
             URL=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.url}' 2>/dev/null || echo "")
             GITHUB_STATE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
               -o jsonpath='{.status.github.deploymentState}' 2>/dev/null || echo "")
-            echo "Phase: ${PHASE} URL: ${URL} GitHub: ${GITHUB_STATE}"
+            echo "[$i/40] Phase: ${PHASE} URL: ${URL} GitHub: ${GITHUB_STATE}"
             if [ "$PHASE" = "Running" ] && [ "$GITHUB_STATE" = "success" ]; then
               echo "Preview ready: ${URL}"
               exit 0
             fi
             if [ "$PHASE" = "Failed" ]; then
-              kubectl describe preview pr-${{ github.event.pull_request.number }}
-              exit 1
+              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+              echo "Transient failure ($CONSECUTIVE_FAILURES/5) — waiting for reconciliation..."
+              if [ "$CONSECUTIVE_FAILURES" -ge 5 ]; then
+                kubectl describe preview pr-${{ github.event.pull_request.number }}
+                exit 1
+              fi
+            else
+              CONSECUTIVE_FAILURES=0
             fi
             sleep 10
           done
@@ -223,6 +230,7 @@ jobs:
           exit 1
 
       - name: Analyze PR diff with kagent
+        if: always()
         run: |
           PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"type":"text","text":"Analyze the diff for PR #${{ github.event.pull_request.number }} in repo ${{ github.repository }} and post a structured analysis comment on the PR."}]}}}'
           RESPONSE=$(curl -s -X POST \
