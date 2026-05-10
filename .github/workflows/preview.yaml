@@ -129,11 +129,11 @@ jobs:
           def classify(path):
               p = path.lower()
               ext = p.rsplit(".", 1)[-1] if "." in p else ""
-              if p.startswith("db/migrations/") or ext == "sql":
+              if p.startswith(("db/migrations/", "migrations/")) or ext == "sql":
                   return "database-migration"
               if p in ("api/openapi.yaml", "api/openapi.yml") or (p.startswith("api/") and ext == "proto"):
                   return "api-contract"
-              if p.startswith("src/") and ext in ("ts", "py", "go"):
+              if (p.startswith("src/") or ext in ("py", "go")) and ext in ("ts", "py", "go"):
                   return "backend"
               if p.startswith(("web/", "frontend/")) or ext in ("tsx", "css"):
                   return "frontend"
@@ -217,6 +217,10 @@ jobs:
             database:
               enabled: true
               databaseName: appdb
+              migration:
+                enabled: true
+                image: ${IMAGE}
+                command: ["alembic", "upgrade", "head"]
             telemetry:
               enabled: true
               serviceName: idp-testing
