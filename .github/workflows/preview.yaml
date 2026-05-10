@@ -108,56 +108,28 @@ jobs:
             });
             return deployment.data.id;
 
-      - name: Analyze PR diff with kagent
+      - name: Setup Go (diff-classifier)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Classify PR diff
         run: |
-          OWNER="${{ github.repository_owner }}"
-          REPO="${{ github.event.repository.name }}"
-          PR="${{ github.event.pull_request.number }}"
-          MSG="Analyze PR #${PR} in repository ${OWNER}/${REPO}. Owner: ${OWNER}, Repo: ${REPO}, PR number: ${PR}."
-          PAYLOAD=$(python3 -c "
-          import json, sys
-          msg = sys.argv[1]
-          run_id = sys.argv[2]
-          print(json.dumps({
-            'jsonrpc': '2.0',
-            'id': '1',
-            'method': 'message/send',
-            'params': {
-              'message': {
-                'role': 'user',
-                'messageId': 'diff-' + run_id,
-                'parts': [{'text': msg}]
-              }
-            }
-          }))
-          " "$MSG" "${{ github.run_id }}")
-
-          echo "=== Triggering kagent preview-diff-analyzer ==="
-          echo "Input: ${MSG}"
-          echo ""
-
-          RESPONSE=$(curl -s -X POST \
-            "http://preview-diff-analyzer.kagent-system.svc.cluster.local:8080/" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            --max-time 120)
-
-          echo "=== kagent response ==="
-          echo "$RESPONSE" | python3 -c "
-          import json, sys
-          try:
-            d = json.load(sys.stdin)
-            result = d.get('result', {})
-            state = result.get('status', {}).get('state', 'unknown')
-            artifacts = result.get('artifacts', [])
-            print(f'Status: {state}')
-            for a in artifacts:
-              for part in a.get('parts', []):
-                if part.get('kind') == 'text':
-                  print(part['text'])
-          except Exception as e:
-            print('raw:', sys.stdin.read() if hasattr(sys.stdin, 'read') else str(e))
-          " || echo "$RESPONSE"
+          go install github.com/ihsenalaya/preview-operator/cmd/diff-classifier@v1.0.24
+          "$(go env GOPATH)/bin/diff-classifier" \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}" \
+            --token "${{ secrets.GITHUB_TOKEN }}" \
+            > /tmp/change-context.json
+          echo "=== Detected impacts ==="
+          python3 -c "
+          import json
+          d = json.load(open('/tmp/change-context.json'))
+          impacts = d['spec']['changeContext']['detectedImpacts']
+          for k, v in impacts.items():
+              print(f'  {k}: {v}')
+          "
 
       - name: Create controller GitHub token secret
         run: |
@@ -248,6 +220,12 @@ jobs:
                 namespace: preview-operator-system
                 key: token
           EOF
+
+      - name: Patch changeContext into Preview CR
+        run: |
+          kubectl patch preview "pr-${{ github.event.pull_request.number }}" \
+            --type=merge -p "$(cat /tmp/change-context.json)"
+          echo "=== changeContext patched ==="
 
       - name: Wait for Preview to be ready
         run: |
