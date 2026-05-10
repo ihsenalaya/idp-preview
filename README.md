@@ -41,10 +41,11 @@ Demo application and reference implementation for the **Preview Operator** — a
 │  2. github.rest.repos.createDeployment() ──► returns deploymentId              │
 │  3. kubectl apply Secret (PREVIEW_GITHUB_TOKEN)                                │
 │  4. scripts/generate_preview_manifest.py                                       │
-│       ├── fetch PR changed files from GitHub API                               │
+│       ├── git diff base...head → raw unified diff                              │
 │       ├── classify each file (frontend / backend / database-migration / …)    │
 │       └── write /tmp/preview-manifest.yaml with:                              │
 │             spec.changeContext.changedFiles + detectedImpacts                  │
+│             spec.changeContext.diffPatch  (raw diff, max 64 KiB)              │
 │             spec.testStrategy.mode: Auto                                       │
 │  5. kubectl apply -f /tmp/preview-manifest.yaml ──► Preview CR pr-<N>         │
 │  6. kubectl wait phase=Running && deploymentState=success (poll 10s × 30)      │
@@ -79,10 +80,11 @@ Demo application and reference implementation for the **Preview Operator** — a
 │    │                                                                            │
 │    ├── [TEST STRATEGY — mode: Auto]                                            │
 │    │     create TestPlan stub (phase=Pending)                                  │
-│    │     A2A call → test-strategist-agent (kagent-system)                     │
-│    │       agent reads changeContext.changedFiles                              │
-│    │       agent fills mustRun / canSkip with reasons                         │
-│    │     controller accepts plan (confidence ≥ threshold)                     │
+│    │     create ephemeral Job (curlimages/curl, TTL=300s)                     │
+│    │       → POST A2A → test-strategist-agent (kagent-system)                 │
+│    │       agent reads changeContext.changedFiles + diffPatch                  │
+│    │       agent fills mustRun / canSkip / confidence with reasons             │
+│    │     controller accepts plan (confidence ≥ threshold, default 70)         │
 │    │     → phase=AwaitingTestPlan while waiting; fallback=Full on timeout      │
 │    │                                                                            │
 │    └── [TEST SUITE — only selected suites run; canSkip → Skipped]             │
@@ -1105,39 +1107,45 @@ Preview CR applied (testStrategy.mode: Auto)
 Controller creates TestPlan stub (status.phase = Pending)
        │
        ▼
-triggerTestStrategistAgent()
-       │  A2A JSON-RPC call to test-strategist-agent.kagent-system
+Controller creates ephemeral Kubernetes Job (curlimages/curl, TTL=300s)
+       │  POST A2A JSON-RPC → test-strategist-agent.kagent-system
        ▼
-Agent reads spec.changeContext.changedFiles + detectedImpacts
+Agent reads spec.changeContext.changedFiles + detectedImpacts + diffPatch
        │
-       ├─ changed: frontend.py (type: frontend)
-       │     → mustRun: smoke, e2e, regression
+       ├─ changed: app.py (type: backend)
+       │     → mustRun: smoke, regression
        │     → canSkip: migration ("No migration files"),
-       │                contract  ("No API contract changes")
+       │                contract  ("No API contract changes"),
+       │                e2e       ("No frontend changes")
        │
-       ├─ changed: migrations/versions/*.py (type: database-migration)
-       │     → mustRun: smoke, migration, regression, e2e (hard rule)
+       ├─ changed: db/migrations/*.sql (type: database-migration)
+       │     → mustRun: smoke, migration, regression (hard rule)
        │
        └─ changed: api/openapi.yaml (type: api-contract)
-             → mustRun: smoke, contract, regression, e2e (hard rule)
+             → mustRun: smoke, contract, regression (hard rule)
        │
        ▼
-TestPlan spec patched → controller promotes to Ready → accepted
+TestPlan spec patched → status.phase = Ready
+       │
+       ▼
+Controller accepts (confidence ≥ threshold) → acceptedByController = true
        │
        ▼
 reconcileTestSuite() runs ONLY mustRun + shouldRun suites
 canSkip suites → phase = Skipped (never scheduled)
 ```
 
+> **Architecture**: the controller never makes HTTP calls. It creates a one-shot Kubernetes Job that performs the A2A call and exits. The Job is automatically garbage-collected 5 minutes after completion.
+
 ### changeContext — how the diff is injected
 
-The GitHub Actions workflow (`scripts/generate_preview_manifest.py`) fetches the list of changed files from the GitHub PR API and embeds them in the manifest:
+`scripts/generate_preview_manifest.py` runs `git diff base...head`, classifies each file, and writes the full manifest:
 
 ```yaml
 spec:
   testStrategy:
     mode: Auto
-    confidenceThreshold: 65
+    confidenceThreshold: 70
   changeContext:
     diffRef:
       headSHA: 645d2166f2d1d32c0ef9561e6cf9b56fad519af8
@@ -1147,21 +1155,30 @@ spec:
     detectedImpacts:
       database: false
       apiContract: false
-      frontend: true
-      backend: false
+      frontend: false
+      backend: true
     changedFiles:
-      - path: frontend.py
-        type: frontend
+      - path: app.py
+        type: backend
+    diffPatch: |
+      diff --git a/app.py b/app.py
+      --- a/app.py
+      +++ b/app.py
+      @@ -42,0 +43 @@ def get_products():
+      +    @app.route('/api/products/search')
+      ...
 ```
+
+The `diffPatch` field contains the raw `git diff` output (max 64 KiB). The agent uses it to reason about *what* changed semantically — for example, a new HTTP route in `app.py` triggers `contract` tests even if `openapi.yaml` was not modified.
 
 File type classification (`scripts/generate_preview_manifest.py`):
 
 | Path pattern | Classified as |
 |---|---|
-| `migrations/versions/` | `database-migration` |
-| `api/openapi.yaml` | `api-contract` |
-| `frontend.py`, `templates/`, `static/` | `frontend` |
-| `app.py`, `tests/` | `backend` |
+| `db/migrations/`, `alembic/versions/` | `database-migration` |
+| `api/openapi.yaml`, `openapi.json` | `api-contract` |
+| `frontend.py`, `templates/`, `static/`, `web/` | `frontend` |
+| `app.py`, `src/`, `tests/` | `backend` |
 | `README`, `*.md`, `docs/` | `docs` |
 | everything else | `other` |
 
@@ -1216,7 +1233,7 @@ Confiance : **75%**
 spec:
   testStrategy:
     mode: Auto
-    confidenceThreshold: 65
+    confidenceThreshold: 70       # default — plans below this score fall back to FullSuite
     fallbackOnAgentTimeout: Full
     agentTimeoutSeconds: 60
   kagent:
@@ -1229,6 +1246,10 @@ spec:
 ### Deploy the test-strategist agent
 
 ```bash
+# Option A — Kustomize overlay (recommended, includes RBAC)
+kubectl apply -k config/overlays/with-test-strategist
+
+# Option B — manual
 kubectl apply -f k8s/kagent/agents/test-strategist-agent.yaml
 
 # Verify
@@ -1236,17 +1257,23 @@ kubectl get agent test-strategist-agent -n kagent-system
 # Expected: READY=True ACCEPTED=True
 ```
 
+> There is no CronJob. The controller creates one ephemeral Job per pending TestPlan. The Job contacts kagent and exits; Kubernetes garbage-collects it after 5 minutes.
+
 ### Monitor test selection
 
 ```bash
 # Watch TestPlan appear and be accepted
 kubectl get testplan -n preview-pr-27 -w
 
+# Check the trigger Job
+kubectl get jobs -n preview-pr-27 | grep trigger
+kubectl logs -n preview-pr-27 job/trigger-pr-27-xxxxx
+
 # See which suites were selected
 kubectl get testplan -n preview-pr-27 -o jsonpath='{.items[0].spec}' | jq '{mustRun,canSkip,confidence,rationale}'
 
-# See which suites were actually run
-kubectl get testrun -n preview-pr-27 -o jsonpath='{.items[0].spec.selectedTests}' | jq .
+# See the controller's acceptance decision
+kubectl describe preview pr-27 | grep -A5 "Test Plan Resolution"
 ```
 
 ---
