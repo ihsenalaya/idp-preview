@@ -14,7 +14,7 @@ env:
 jobs:
   deploy:
     name: Build & Deploy Preview
-    runs-on: [self-hosted, aks, test1]
+    runs-on: [self-hosted, aks]
     permissions:
       contents: read
       packages: write
@@ -110,8 +110,6 @@ jobs:
 
       - name: Classify PR diff (changeContext)
         id: classify
-        env:
-          GH_TOKEN: ${{ secrets.PREVIEW_GITHUB_TOKEN }}
         run: |
           python3 - <<'PYEOF'
           import json, os, subprocess, sys
