@@ -14,9 +14,9 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  KIND_CLUSTER: cellenza-preview
+  KIND_CLUSTER: idp-preview
   CERT_MANAGER_VERSION: v1.16.0
-  OPERATOR_CHART: oci://ghcr.io/ihsenalaya/charts/cellenza-operator
+  OPERATOR_CHART: oci://ghcr.io/ihsenalaya/charts/preview-operator
   OPERATOR_VERSION: "0.12.4"
   RUNNER_NAMESPACE: github-runner
 
@@ -75,25 +75,25 @@ jobs:
       - name: Create AI API key secret
         run: |
           kubectl create secret generic ai-api-key \
-            --namespace=cellenza-operator-system \
+            --namespace=preview-operator-system \
             --from-literal=api-key='${{ secrets.AI_API_KEY }}' \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Create GHCR pull secret for operator
         run: |
-          kubectl create namespace cellenza-operator-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace preview-operator-system --dry-run=client -o yaml | kubectl apply -f -
           kubectl create secret docker-registry ghcr-pull-secret \
             --docker-server=ghcr.io \
             --docker-username='${{ github.repository_owner }}' \
-            --docker-password='${{ secrets.CELLENZA_GITHUB_TOKEN }}' \
-            --namespace=cellenza-operator-system \
+            --docker-password='${{ secrets.PREVIEW_GITHUB_TOKEN }}' \
+            --namespace=preview-operator-system \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Install cellenza-operator
+      - name: Install preview-operator
         run: |
-          helm upgrade --install cellenza-operator ${OPERATOR_CHART} \
+          helm upgrade --install preview-operator ${OPERATOR_CHART} \
             --version ${OPERATOR_VERSION} \
-            --namespace cellenza-operator-system \
+            --namespace preview-operator-system \
             --create-namespace \
             --set image.pullSecrets[0]=ghcr-pull-secret \
             --wait --timeout=120s
@@ -101,7 +101,7 @@ jobs:
       - name: Register self-hosted runner
         run: |
           RUNNER_TOKEN=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.CELLENZA_GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.PREVIEW_GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token" \
             | jq -r .token)

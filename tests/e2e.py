@@ -1,7 +1,7 @@
 """
 Browser E2E tests using Playwright — validates the real user experience.
-Tests run headless Chromium against the live preview app deployed by Cellenza.
-Output lines starting with PASS/FAIL are parsed by the Cellenza operator.
+Tests run headless Chromium against the live preview app deployed by the preview-operator.
+Output lines starting with PASS/FAIL are parsed by the preview-operator.
 
 Before each test the database is restored to the after-seed checkpoint so every
 test runs against an identical, predictable baseline.

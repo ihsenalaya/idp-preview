@@ -11,7 +11,7 @@ GitHub REST API, plus rendered Markdown examples of what the developer sees.
 
 ```bash
 curl -X POST \
-  "https://api.github.com/repos/ihsenalaya/idp-testing/issues/42/comments" \
+  "https://api.github.com/repos/ihsenalaya/idp-preview/issues/42/comments" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -H "Content-Type: application/json" \
   -d @- <<'EOF'
@@ -47,7 +47,7 @@ EOF
 
 ```bash
 curl -X POST \
-  "https://api.github.com/repos/ihsenalaya/idp-testing/issues/42/comments" \
+  "https://api.github.com/repos/ihsenalaya/idp-preview/issues/42/comments" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -H "Content-Type: application/json" \
   -d @- <<'EOF'
@@ -104,7 +104,7 @@ comment instead of creating a new one on every reconcile.
 COMMENT_ID=987654321
 
 curl -X PATCH \
-  "https://api.github.com/repos/ihsenalaya/idp-testing/issues/comments/${COMMENT_ID}" \
+  "https://api.github.com/repos/ihsenalaya/idp-preview/issues/comments/${COMMENT_ID}" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"body": "<updated body>"}'

@@ -161,7 +161,7 @@ spec:
     databaseName: appdb
   telemetry:
     enabled: true
-    serviceName: idp-testing
+    serviceName: idp-preview
     autoInstrumentation:
       language: python
       instrumentationRef: observability/python
