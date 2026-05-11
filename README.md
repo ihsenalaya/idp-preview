@@ -777,9 +777,9 @@ spec:
 
 | Tier | CPU request | CPU limit | Memory request | Memory limit |
 |------|-------------|-----------|----------------|--------------|
-| `small` | 50m | 200m | 64Mi | 256Mi |
-| `medium` | 100m | 500m | 128Mi | 512Mi |
-| `large` | 250m | 1000m | 256Mi | 1Gi |
+| `small` | 100m | 250m | 128Mi | 256Mi |
+| `medium` | 200m | 500m | 256Mi | 512Mi |
+| `large` | 500m | 2000m | 512Mi | 2Gi |
 
 ### Lifecycle phases
 
@@ -1606,13 +1606,17 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 | Route | Method | Returns |
 |-------|--------|---------|
 | `/healthz` | GET | `ok` |
+| `/ping` | GET | `pong` — lightweight liveness probe |
+| `/api/version` | GET | `{"version":"1.0.3","operator":"preview-operator","features":[…]}` |
+| `/api/pipeline-info` | GET | Preview env metadata injected by the operator (`PREVIEW_PR`, `PREVIEW_BRANCH`, `PREVIEW_NAMESPACE`) + pipeline config (Microcks runner, kagent config) |
 | `/api/products` | GET | last 50 products with ratings |
 | `/api/products` | POST | create product → 201 |
 | `/api/products/<id>` | GET | product + reviews → 200 / 404 |
 | `/api/products/<id>` | DELETE | 204 / 404 |
-| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/search?q=<term>` | GET | `{"query":"…","count":N,"results":[…]}` — ILIKE search on name and category, max 50 |
+| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` — only in-stock items |
 | `/api/products/top-rated?limit=N` | GET | products ranked by avg review rating (max 50, default 10) |
-| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` — same category, in-stock only, max 5 |
 | `/api/products/<id>/reviews` | GET/POST | reviews |
 | `/api/categories` | GET/POST | categories |
 | `/api/orders` | GET/POST | orders (409 if insufficient stock) |
