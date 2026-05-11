@@ -219,6 +219,57 @@ paths:
                       category_name: Electronics
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/products/top-rated:
+    get:
+      operationId: listTopRatedProducts
+      summary: List products ranked by average review rating
+      tags:
+      - Products
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        description: Maximum number of results (default 10, max 50)
+        example: 5
+      responses:
+        '200':
+          description: Products ranked by average rating, descending
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, results]
+                properties:
+                  count:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TopRatedProduct'
+              examples:
+                Example_1:
+                  value:
+                    count: 2
+                    results:
+                    - id: 3
+                      name: Wireless Headphones
+                      price: 199.99
+                      category: Electronics
+                      avg_rating: 4.8
+                      review_count: 5
+                    - id: 7
+                      name: Leather Notebook
+                      price: 24.99
+                      category: Stationery
+                      avg_rating: 4.5
+                      review_count: 3
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}:
     get:
       operationId: getProduct
@@ -721,6 +772,34 @@ components:
         category_name:
           type: string
           nullable: true
+    TopRatedProduct:
+      type: object
+      required:
+      - id
+      - name
+      - price
+      - avg_rating
+      - review_count
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        price:
+          type: number
+          format: float
+        category:
+          type: string
+          nullable: true
+        avg_rating:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 5
+        review_count:
+          type: integer
+          minimum: 1
     Review:
       type: object
       required:
