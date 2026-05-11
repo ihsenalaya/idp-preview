@@ -299,7 +299,7 @@ helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ihsenalaya/preview-operator \
-  --set image.tag=1.0.21 \
+  --set image.tag=1.0.37 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
@@ -1565,6 +1565,7 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 | `/api/products/<id>` | GET | product + reviews → 200 / 404 |
 | `/api/products/<id>` | DELETE | 204 / 404 |
 | `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/top-rated?limit=N` | GET | products ranked by avg review rating (max 50, default 10) |
 | `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` |
 | `/api/products/<id>/reviews` | GET/POST | reviews |
 | `/api/categories` | GET/POST | categories |
@@ -1695,7 +1696,7 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.30** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.37** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1718,7 +1719,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.30** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.37** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1739,7 +1740,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.30                                            │
+│  Preview Operator 1.0.37                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
