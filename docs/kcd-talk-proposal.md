@@ -10,7 +10,7 @@
 
 ## Elevator Pitch *(~50 words — shown in the schedule)*
 
-Every pull request deserves a live environment. We built a Kubernetes operator that provisions namespaces, builds images in-cluster, seeds a database with AI-generated data, runs contract tests, and posts a URL back to the PR — all triggered by a single `git push`.
+Every pull request deserves a live environment — **isolated by NetworkPolicy, secured with Pod Security Standards, and seeded by AI**. We built a Kubernetes operator that provisions namespaces, enforces network isolation, builds images in-cluster, seeds a database from an LLM-generated diff, runs contract tests, and posts a URL back to the PR — all from a single `git push`.
 
 ---
 
@@ -23,6 +23,50 @@ This talk walks through the design and implementation of `preview-operator`, a p
 Attendees will see the full reconciliation loop in action, understand the design tradeoffs (operator vs. Argo Workflows vs. shell scripts), and learn how to integrate AI enrichment safely into a Kubernetes controller without turning it into a black box.
 
 **This is a case study with a live demo.** Real cluster, real PRs, real failures — and a controller that handles them.
+
+---
+
+## Architecture Overview
+
+Each `Preview` CR triggers a reconciliation loop that creates a fully isolated, self-contained environment:
+
+```
+┌─ GitHub PR ───────────────────────────────────────────────────────────────┐
+│  git push → Actions workflow → kubectl apply Preview CR                   │
+└───────────────────────────────────────────────────────────────────────────┘
+                                      │
+                          preview-operator reconciles
+                                      │
+             ┌────────────────────────▼────────────────────────┐
+             │            Namespace: preview-pr-<N>             │
+             │                                                   │
+             │  ┌─────────────────────────────────────────────┐ │
+             │  │  NetworkPolicy (auto-provisioned)            │ │
+             │  │                                              │ │
+             │  │  Ingress rules:                              │ │
+             │  │    • inter-pod within namespace (app ↔ db)  │ │
+             │  │    • ingress-nginx controller only           │ │
+             │  │                                              │ │
+             │  │  Egress rules:                               │ │
+             │  │    • open (AI calls, GHCR pulls, GitHub API) │ │
+             │  │                                              │ │
+             │  │  Pod Security Standards:                     │ │
+             │  │    enforce: baseline  (blocks privileged)    │ │
+             │  │    warn:    restricted (flags best gaps)     │ │
+             │  └─────────────────────────────────────────────┘ │
+             │                                                   │
+             │  Kaniko Job → GHCR  →  App Deployment            │
+             │  PostgreSQL StatefulSet                           │
+             │  AI Seed Job  (LLM diff → SQL → psql)            │
+             │  Microcks contract tests  (OpenAPI spec)          │
+             │  Regression + E2E tests                           │
+             │  Ingress / VirtualService (Istio auto-detected)   │
+             └───────────────────────────────────────────────────┘
+                                      │
+                          PR comment: URL + test table + AI analysis
+```
+
+**NetworkPolicy is not optional** — it is reconciled before any workload is created, and the operator refuses to proceed to the build phase until the policy is in place. This ensures every preview environment is isolated from day zero: a broken app in `preview-pr-42` cannot reach pods in `preview-pr-43` or in `production`.
 
 ---
 
@@ -44,13 +88,15 @@ Attendees leave with:
 
 1. **A mental model of the operator pattern** applied to a real platform engineering problem — not a toy example, but a production controller with finalizers, status conditions, and idempotent reconciliation.
 
-2. **A concrete architecture** they can adapt: CRD schema, RBAC, NetworkPolicy, Kaniko, Microcks, and GitHub API integration all wired together in a single operator.
+2. **Network isolation by default with NetworkPolicy** — how to auto-provision per-namespace NetworkPolicies that enforce ingress isolation (inter-pod + ingress-nginx only) and open egress, and why this must happen *before* any workload lands, not as an afterthought.
 
-3. **A safe approach to LLM integration** in infrastructure tooling — prompt design, structured output, retry logic, and failure handling so the AI enrichment never blocks the reconciliation loop.
+3. **Pod Security Standards in practice** — how `enforce: baseline` + `warn: restricted` on the namespace prevents privilege escalation without breaking legitimate workloads, and what the label-based approach looks like in a reconciler.
 
-4. **Practical answers** to questions like: *when should you use an operator vs. Argo Workflows?*, *how do you isolate preview namespaces without cluster-admin?*, *how do you clean up reliably without leaving dangling resources?*
+4. **A safe approach to LLM integration** in infrastructure tooling — prompt design, structured output, retry logic, and failure handling so the AI enrichment never blocks the reconciliation loop.
 
-5. **A running codebase** they can fork and run in their own cluster today (`github.com/ihsenalaya/preview-operator`, Apache 2.0).
+5. **Practical answers** to questions like: *how do you isolate preview namespaces without cluster-admin?*, *when should you use an operator vs. Argo Workflows?*, *how do you clean up reliably without leaving dangling resources?*
+
+6. **A running codebase** they can fork and run in their own cluster today (`github.com/ihsenalaya/preview-operator`, Apache 2.0).
 
 ---
 
@@ -80,7 +126,7 @@ Then: intentionally break the OpenAPI contract → show kagent posting an AI fai
 | 3–8 min | Architecture overview: CRD, reconciliation phases, components |
 | 8–18 min | **Live demo** — full PR-to-preview pipeline |
 | 18–24 min | Deep dive: AI enrichment loop (LLM → ConfigMap → Job) |
-| 24–29 min | Security layer: NetworkPolicy, PSS, RBAC, PAT → GitHub App migration |
+| 24–29 min | Security by default: NetworkPolicy rules, PSS labels, RBAC — and why order matters |
 | 29–33 min | Lessons learned: what broke in production, what we'd do differently |
 | 33–35 min | Resources + Q&A setup |
 
