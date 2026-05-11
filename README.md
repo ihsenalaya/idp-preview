@@ -694,10 +694,12 @@ spec:
   database:
     enabled: true
     databaseName: appdb
-    # migration:
-    #   enabled: true           # runs an Alembic Job (optional)
-    # seed:
-    #   enabled: true           # runs a static seed Job (optional)
+    migration:
+      enabled: true
+      command: ["python", "-m", "alembic", "upgrade", "head"]  # REQUIRED when enabled=true
+    seed:
+      enabled: true
+      command: ["python", "scripts/seed.py"]                   # REQUIRED when enabled=true
 
   # ── Telemetry ──────────────────────────────────────────────────────────────
   telemetry:
@@ -788,12 +790,36 @@ spec:
 ### Lifecycle phases
 
 ```
-Pending       → requiresApproval=true, waiting for approvedBy to be set
-Provisioning  → namespace, PostgreSQL, services, ingress being created
-Running       → all resources ready, URL reachable, AI + tests executing
-Terminating   → PR closed / TTL expired, finalizer tearing down namespace
-Failed        → reconcile error — diagnostics + pod logs captured in status
+Pending           → requiresApproval=true, waiting for approvedBy to be set
+Provisioning      → namespace, PostgreSQL, services, ingress being created
+Running           → all resources ready, URL reachable, AI + tests executing
+                      │
+                      │ testStrategy.mode=Auto — agent deciding which suites to run
+                      ▼
+AwaitingTestPlan  → test-strategist-agent reading diff + ReconcileEvents
+                      │ TestPlan accepted (confidence ≥ threshold)
+                      ▼
+Running           → test suite executing (only mustRun suites)
+Terminating       → PR closed / TTL expired, finalizer tearing down namespace
+Failed            → reconcile error — diagnostics + pod logs captured in status
 ```
+
+### Admission webhook behaviors
+
+The operator installs a **mutating** (defaulter) and **validating** webhook that run before any CR reaches the controller.
+
+| Trigger | Action |
+|---------|--------|
+| `spec.resourceTier: large` | Automatically sets `spec.requiresApproval: true` — cannot be bypassed |
+| `spec.replicas > 3` | Admission **warning** (not rejection): *"running N replicas in a preview env is expensive"* |
+| `spec.telemetry.enabled: true` | Rejects if `spec.telemetry.autoInstrumentation` is nil |
+| `spec.telemetry.autoInstrumentation.language: go` | Rejects if `goTargetExecutable` is not set |
+| `spec.database.migration.enabled: true` | Rejects if `spec.database.migration.command` is empty |
+| `spec.database.seed.enabled: true` | Rejects if `spec.database.seed.command` is empty |
+| `spec.github.enabled: true` | Rejects if `owner`, `repo`, `deploymentId` (> 0), or `tokenSecretRef.name` are missing |
+| `spec.aiEnrichment.enabled: true` | Defaults `seed` and `tests` to `{enabled: true}` if omitted |
+
+Disable with `--set webhook.enabled=false` (no cert-manager needed, but all validations above are skipped).
 
 ---
 
@@ -907,9 +933,19 @@ kubectl get preview pr-42 -o jsonpath='{.status}' | jq .
   },
   "aiEnrichment": {
     "phase": "Succeeded",
+    "rerunOnly": false,
     "seedStatus": "Succeeded",
     "testsStatus": "Succeeded",
+    "testResults": ["PASS: test_health", "PASS: test_order_stock"],
+    "summary": "Seeded 12 products and 3 orders matching the PR diff.",
+    "error": "",
     "completedAt": "2026-05-08T09:05:00Z"
+  },
+  "diffAnalysis": {
+    "phase": "Succeeded",
+    "triggeredAt": "2026-05-08T09:00:10Z",
+    "commentId": 123456780,
+    "analysis": "PR adds a new /api/products/search endpoint — impact: backend + contract tests recommended."
   },
   "testPlanResolution": {
     "source": "Agent",
@@ -1146,6 +1182,14 @@ kubectl logs -n preview-pr-42 job/e2e-tests -f
 
 ## 7. AI Test Strategist — Diff-Driven Test Selection
 
+The operator supports three test selection strategies:
+
+| Mode | Behaviour |
+|------|-----------|
+| `FullSuite` (default) | Run all enabled suites — no agent involved |
+| `Auto` | test-strategist-agent reads the diff and fills a TestPlan; fallback to FullSuite on timeout |
+| `Manual` | Point to a hand-crafted TestPlan CR via `spec.testStrategy.manualPlanRef` |
+
 When `spec.testStrategy.mode: Auto` is set, the **test-strategist-agent** (a kagent agent) analyses the PR diff and decides which test suites to run — before a single test job is scheduled.
 
 ### How it fits the pipeline
@@ -1198,15 +1242,23 @@ spec:
     confidenceThreshold: 70
   changeContext:
     diffRef:
-      headSHA: 645d2166f2d1d32c0ef9561e6cf9b56fad519af8
+      provider: GitHub
+      repository: ihsenalaya/idp-preview
+      prNumber: 42
       baseSHA: 86d098a5e4d12f3
+      headSHA: 645d2166f2d1d32c0ef9561e6cf9b56fad519af8
     summary:
       changedFilesCount: 1
+      additions: 18
+      deletions: 2
     detectedImpacts:
       database: false
       apiContract: false
       frontend: false
       backend: true
+      requiresSeedData: false
+      requiresContractTests: false
+      requiresRegressionTests: true
     changedFiles:
       - path: app.py
         type: backend
