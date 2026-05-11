@@ -7,6 +7,7 @@ Demo application and reference implementation for the **Preview Operator** — a
 ## Table of Contents
 
 1. [General Architecture](#1-general-architecture)
+   - [Namespace Security — NetworkPolicy & Pod Security Standards](#namespace-security--networkpolicy--pod-security-standards)
 2. [Prerequisites](#2-prerequisites)
 3. [Cluster Installation](#3-cluster-installation)
 4. [The Preview Custom Resource](#4-the-preview-custom-resource)
@@ -138,6 +139,51 @@ cluster
 │     └── (same structure)             │  PR #2 is completely independent
 │                                      ┘
 └── preview-pr-N/ …
+```
+
+### Namespace Security — NetworkPolicy & Pod Security Standards
+
+Both controls are applied automatically by the operator at namespace creation, before any pod is scheduled. There is no configuration flag — they are always on.
+
+#### NetworkPolicy `preview-isolation`
+
+```
+┌── Namespace: preview-pr-42 ─────────────────────────────────────────┐
+│                                                                       │
+│  Ingress — autorisé:                                                  │
+│    ① Pods du même namespace  (svc-backend ↔ postgres, tests ↔ app)  │
+│    ② Pods du namespace "ingress-nginx"  (trafic public entrant)      │
+│  Ingress — bloqué: tout autre namespace, toute autre source          │
+│                                                                       │
+│  Egress — ouvert:                                                     │
+│    AI API (Azure OpenAI), GitHub API, GHCR, kube-dns                 │
+│                                                                       │
+│  → preview-pr-42 ne peut PAS atteindre preview-pr-43,               │
+│    ni production, ni aucun autre namespace.                           │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+La policy est créée dans `reconcileNamespace()`, première étape du provisionnement. Le contrôleur ne progresse pas vers le build ou le déploiement tant qu'elle n'est pas en place.
+
+```bash
+kubectl get networkpolicy -n preview-pr-42
+# NAME                POD-SELECTOR   AGE
+# preview-isolation   <none>         5s
+```
+
+#### Pod Security Standards
+
+```yaml
+# Labels appliqués au namespace à la création
+pod-security.kubernetes.io/enforce: baseline    # bloque: conteneurs privilégiés,
+                                                #   montages hostPath, host networking
+pod-security.kubernetes.io/warn:    restricted  # avertit sans bloquer pour les
+                                                #   gaps restants (seccomp, runAsNonRoot…)
+```
+
+```bash
+kubectl get namespace preview-pr-42 \
+  -o jsonpath='{.metadata.labels}' | jq 'with_entries(select(.key | startswith("pod-security")))'
 ```
 
 ---
