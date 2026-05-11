@@ -7,6 +7,7 @@ Demo application and reference implementation for the **Preview Operator** — a
 ## Table of Contents
 
 1. [General Architecture](#1-general-architecture)
+   - [Namespace Security — NetworkPolicy & Pod Security Standards](#namespace-security--networkpolicy--pod-security-standards)
 2. [Prerequisites](#2-prerequisites)
 3. [Cluster Installation](#3-cluster-installation)
 4. [The Preview Custom Resource](#4-the-preview-custom-resource)
@@ -138,6 +139,51 @@ cluster
 │     └── (same structure)             │  PR #2 is completely independent
 │                                      ┘
 └── preview-pr-N/ …
+```
+
+### Namespace Security — NetworkPolicy & Pod Security Standards
+
+Both controls are applied automatically by the operator at namespace creation, before any pod is scheduled. There is no configuration flag — they are always on.
+
+#### NetworkPolicy `preview-isolation`
+
+```
+┌── Namespace: preview-pr-42 ─────────────────────────────────────────┐
+│                                                                       │
+│  Ingress — autorisé:                                                  │
+│    ① Pods du même namespace  (svc-backend ↔ postgres, tests ↔ app)  │
+│    ② Pods du namespace "ingress-nginx"  (trafic public entrant)      │
+│  Ingress — bloqué: tout autre namespace, toute autre source          │
+│                                                                       │
+│  Egress — ouvert:                                                     │
+│    AI API (Azure OpenAI), GitHub API, GHCR, kube-dns                 │
+│                                                                       │
+│  → preview-pr-42 ne peut PAS atteindre preview-pr-43,               │
+│    ni production, ni aucun autre namespace.                           │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+La policy est créée dans `reconcileNamespace()`, première étape du provisionnement. Le contrôleur ne progresse pas vers le build ou le déploiement tant qu'elle n'est pas en place.
+
+```bash
+kubectl get networkpolicy -n preview-pr-42
+# NAME                POD-SELECTOR   AGE
+# preview-isolation   <none>         5s
+```
+
+#### Pod Security Standards
+
+```yaml
+# Labels appliqués au namespace à la création
+pod-security.kubernetes.io/enforce: baseline    # bloque: conteneurs privilégiés,
+                                                #   montages hostPath, host networking
+pod-security.kubernetes.io/warn:    restricted  # avertit sans bloquer pour les
+                                                #   gaps restants (seccomp, runAsNonRoot…)
+```
+
+```bash
+kubectl get namespace preview-pr-42 \
+  -o jsonpath='{.metadata.labels}' | jq 'with_entries(select(.key | startswith("pod-security")))'
 ```
 
 ---
@@ -299,7 +345,7 @@ helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ihsenalaya/preview-operator \
-  --set image.tag=1.0.37 \
+  --set image.tag=1.0.38 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
@@ -667,6 +713,8 @@ spec:
     smoke: {}                   # built-in — no config needed
     regression:
       enabled: true             # runs /app/tests/regression.py
+    migration:
+      enabled: true             # validates Alembic scripts; auto-triggered when migration files detected in diff
     e2e:
       enabled: true             # runs /app/tests/e2e.py (Playwright/Chromium)
 
@@ -697,8 +745,10 @@ spec:
   # ── kagent — AI failure analysis ───────────────────────────────────────────
   kagent:
     enabled: true
-    agentName: preview-troubleshooter-agent
-    agentNamespace: kagent-system
+    namespace: kagent-system
+    agentName: preview-troubleshooter-agent         # triggered on test suite failure
+    diffAnalyzerAgentName: preview-diff-analyzer    # triggered on first Running (diff comment)
+    testStrategistAgentName: test-strategist-agent  # triggered when TestPlan is Pending (Auto mode)
 
   # ── GitHub integration ─────────────────────────────────────────────────────
   github:
@@ -731,9 +781,9 @@ spec:
 
 | Tier | CPU request | CPU limit | Memory request | Memory limit |
 |------|-------------|-----------|----------------|--------------|
-| `small` | 50m | 200m | 64Mi | 256Mi |
-| `medium` | 100m | 500m | 128Mi | 512Mi |
-| `large` | 250m | 1000m | 256Mi | 1Gi |
+| `small` | 100m | 250m | 128Mi | 256Mi |
+| `medium` | 200m | 500m | 256Mi | 512Mi |
+| `large` | 500m | 2000m | 512Mi | 2Gi |
 
 ### Lifecycle phases
 
@@ -1560,13 +1610,17 @@ The backend calls `init_db()` on startup (`CREATE TABLE IF NOT EXISTS`) — rest
 | Route | Method | Returns |
 |-------|--------|---------|
 | `/healthz` | GET | `ok` |
+| `/ping` | GET | `pong` — lightweight liveness probe |
+| `/api/version` | GET | `{"version":"1.0.3","operator":"preview-operator","features":[…]}` |
+| `/api/pipeline-info` | GET | Preview env metadata injected by the operator (`PREVIEW_PR`, `PREVIEW_BRANCH`, `PREVIEW_NAMESPACE`) + pipeline config (Microcks runner, kagent config) |
 | `/api/products` | GET | last 50 products with ratings |
 | `/api/products` | POST | create product → 201 |
 | `/api/products/<id>` | GET | product + reviews → 200 / 404 |
 | `/api/products/<id>` | DELETE | 204 / 404 |
-| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/search?q=<term>` | GET | `{"query":"…","count":N,"results":[…]}` — ILIKE search on name and category, max 50 |
+| `/api/products/discounted?min_discount=N` | GET | `{"count":N,"products":[…]}` — only in-stock items |
 | `/api/products/top-rated?limit=N` | GET | products ranked by avg review rating (max 50, default 10) |
-| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` |
+| `/api/products/<id>/related` | GET | `{"count":N,"products":[…]}` — same category, in-stock only, max 5 |
 | `/api/products/<id>/reviews` | GET/POST | reviews |
 | `/api/categories` | GET/POST | categories |
 | `/api/orders` | GET/POST | orders (409 if insufficient stock) |
@@ -1696,7 +1750,7 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.37** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.38** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1719,7 +1773,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.37** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.38** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1740,7 +1794,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.37                                            │
+│  Preview Operator 1.0.38                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
