@@ -468,9 +468,9 @@ def api_related_products(product_id):
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.2",
+        "version":  "1.0.3",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "product-search"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "product-search", "top-rated"]
     })
 
 
@@ -500,6 +500,37 @@ def search_products():
             for r in rows
         ]
         return jsonify({"query": query, "count": len(results), "results": results})
+    finally:
+        conn.close()
+
+
+@app.route("/api/products/top-rated", methods=["GET"])
+def top_rated_products():
+    limit = min(int(request.args.get("limit", 10)), 50)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT p.id, p.name, p.price, c.name AS category,
+                   ROUND(AVG(r.rating), 2) AS avg_rating,
+                   COUNT(r.id) AS review_count
+            FROM products p
+            LEFT JOIN categories c ON c.id = p.category_id
+            LEFT JOIN reviews r ON r.product_id = p.id
+            GROUP BY p.id, p.name, p.price, c.name
+            HAVING COUNT(r.id) > 0
+            ORDER BY avg_rating DESC, review_count DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        cols = [d[0] for d in cur.description]
+        results = [dict(zip(cols, row)) for row in cur.fetchall()]
+        for r in results:
+            r["avg_rating"] = float(r["avg_rating"])
+            r["price"] = float(r["price"])
+        return jsonify({"count": len(results), "results": results})
     finally:
         conn.close()
 
