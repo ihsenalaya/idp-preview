@@ -713,6 +713,8 @@ spec:
     smoke: {}                   # built-in — no config needed
     regression:
       enabled: true             # runs /app/tests/regression.py
+    migration:
+      enabled: true             # validates Alembic scripts; auto-triggered when migration files detected in diff
     e2e:
       enabled: true             # runs /app/tests/e2e.py (Playwright/Chromium)
 
@@ -743,8 +745,10 @@ spec:
   # ── kagent — AI failure analysis ───────────────────────────────────────────
   kagent:
     enabled: true
-    agentName: preview-troubleshooter-agent
-    agentNamespace: kagent-system
+    namespace: kagent-system
+    agentName: preview-troubleshooter-agent         # triggered on test suite failure
+    diffAnalyzerAgentName: preview-diff-analyzer    # triggered on first Running (diff comment)
+    testStrategistAgentName: test-strategist-agent  # triggered when TestPlan is Pending (Auto mode)
 
   # ── GitHub integration ─────────────────────────────────────────────────────
   github:
