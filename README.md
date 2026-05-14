@@ -345,7 +345,7 @@ helm install preview-operator ./charts/preview-operator \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ihsenalaya/preview-operator \
-  --set image.tag=1.0.38 \
+  --set image.tag=1.0.39 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
@@ -499,15 +499,17 @@ kubectl create secret docker-registry ghcr-pull-secret \
   --docker-username=ihsenalaya \
   --docker-password="$GH_TOKEN"
 
-# Deploy RBAC, MCP server, and agent
+# Deploy RBAC, MCP server, and agents
 kubectl apply -f k8s/kagent/rbac-readonly.yaml
 kubectl apply -f k8s/kagent/jaeger-mcp-server.yaml
 kubectl rollout status deployment/jaeger-mcp-server -n kagent-system --timeout=120s
 kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
+kubectl apply -f k8s/kagent/agents/test-strategist-agent.yaml
+kubectl apply -f k8s/kagent/agents/failure-analyst-agent.yaml
 
-# Verify — ACCEPTED must be True before the operator can call the agent
-kubectl get agent preview-troubleshooter-agent -n kagent-system
-# Expected: READY=True  ACCEPTED=True
+# Verify — ACCEPTED must be True before the operator can call the agents
+kubectl get agent -n kagent-system
+# Expected: READY=True  ACCEPTED=True for all agents
 ```
 
 > **If ACCEPTED=False** : check `kubectl describe agent preview-troubleshooter-agent -n kagent-system`.
@@ -1359,6 +1361,18 @@ kubectl get agent test-strategist-agent -n kagent-system
 # Expected: READY=True ACCEPTED=True
 ```
 
+### Deploy the failure-analyst agent
+
+```bash
+kubectl apply -f k8s/kagent/agents/failure-analyst-agent.yaml
+
+# Verify
+kubectl get agent failure-analyst-agent -n kagent-system
+# Expected: READY=True ACCEPTED=True
+```
+
+The failure-analyst agent prompt is fully externalised in the Agent CR — update it with `kubectl apply` at any time, no operator rebuild required.
+
 > There is no CronJob. The controller creates one ephemeral Job per pending TestPlan. The Job contacts kagent and exits; Kubernetes garbage-collects it after 5 minutes.
 
 ### Monitor test selection
@@ -1802,7 +1816,7 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.38** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.39** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
@@ -1825,11 +1839,11 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.38** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.39** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
-| CRD | `previews.platform.company.io/v1alpha1` | Preview CR |
+| CRD | `previews.platform.company.io/v1alpha1` (shortname: `prev`) | Preview CR |
 
 ### Architecture
 
@@ -1846,7 +1860,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.38                                            │
+│  Preview Operator 1.0.39                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │
