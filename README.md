@@ -384,6 +384,9 @@ helm upgrade preview-operator ./charts/preview-operator \
 kubectl -n preview-operator-system rollout status deployment/preview-operator --timeout=120s
 ```
 
+> **`previewDomain` is baked into `values.yaml`** (`preview.ihsenalaya.xyz`).
+> `--reuse-values` preserves it across upgrades — never drop it or the operator falls back to `localtest.me`.
+
 ### Step 4b — Install Microcks
 
 Microcks provides in-cluster OpenAPI contract testing.
