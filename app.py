@@ -83,6 +83,40 @@ def healthz():
     return "ok", 200
 
 
+@app.route("/api/health/detailed")
+def health_detailed():
+    import datetime
+    status = "ok"
+    db_status = "ok"
+    db_error = None
+    counts = {}
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        for table in ("products", "categories", "reviews", "orders"):
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+    except Exception as e:
+        db_status = "error"
+        db_error = str(e)
+        status = "degraded"
+
+    body = {
+        "status":    status,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "version":   "1.0.3",
+        "database": {
+            "status": db_status,
+            "counts": counts,
+        },
+    }
+    if db_error:
+        body["database"]["error"] = db_error
+    return jsonify(body), 200 if status == "ok" else 503
+
+
 @app.route("/ping")
 def ping():
     return "pong", 200
