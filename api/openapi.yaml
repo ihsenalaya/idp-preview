@@ -179,6 +179,54 @@ paths:
                 error: name and price are required
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/products/featured:
+    get:
+      operationId: listFeaturedProducts
+      summary: List featured products — in stock, ordered by rating then discount
+      tags:
+      - Products
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 6
+        description: Maximum number of results (default 6, max 20)
+        example: 6
+      responses:
+        '200':
+          description: Featured products sorted by rating and discount
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, products]
+                properties:
+                  count:
+                    type: integer
+                  products:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DiscountedProduct'
+              examples:
+                Example_1:
+                  value:
+                    count: 2
+                    products:
+                    - id: 3
+                      name: Wireless Headphones
+                      price: 199.99
+                      stock: 8
+                      discount_pct: 10.0
+                      discounted_price: 179.99
+                      category_name: Electronics
+                      avg_rating: 4.8
+                      review_count: 5
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/discounted:
     get:
       operationId: listDiscountedProducts

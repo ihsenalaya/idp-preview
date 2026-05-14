@@ -412,6 +412,37 @@ def api_seeded_data():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/products/featured", methods=["GET"])
+def api_featured_products():
+    limit = min(int(request.args.get("limit", 6)), 20)
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT p.id, p.name, p.price, p.stock, p.discount_pct,
+                   ROUND(p.price * (1 - p.discount_pct / 100), 2) AS discounted_price,
+                   c.name AS category_name,
+                   ROUND(AVG(r.rating)::numeric, 2) AS avg_rating,
+                   COUNT(r.id) AS review_count
+            FROM products p
+            LEFT JOIN categories c ON c.id = p.category_id
+            LEFT JOIN reviews r    ON r.product_id = p.id
+            WHERE p.stock > 0
+            GROUP BY p.id, p.name, p.price, p.stock, p.discount_pct, c.name
+            ORDER BY avg_rating DESC NULLS LAST, review_count DESC, p.discount_pct DESC
+            LIMIT %s
+        """, (limit,))
+        rows = fetch_all_dicts(cur)
+        cur.close(); conn.close()
+        for r in rows:
+            r["price"]            = float(r["price"])
+            r["discount_pct"]     = float(r["discount_pct"] or 0)
+            r["discounted_price"] = float(r["discounted_price"] or r["price"])
+            r["avg_rating"]       = float(r["avg_rating"]) if r["avg_rating"] else None
+        return jsonify({"products": rows, "count": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/products/discounted", methods=["GET"])
 def api_discounted_products():
     try:
