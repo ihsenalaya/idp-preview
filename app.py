@@ -468,9 +468,9 @@ def api_related_products(product_id):
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({
-        "version":  "1.0.3",
+        "version":  "1.0.4",
         "operator": "preview-operator",
-        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "product-search", "top-rated"]
+        "features": ["contract-testing", "kagent-ai-analysis", "ai-enrichment", "product-search", "top-rated", "extern-test-scripts"]
     })
 
 
