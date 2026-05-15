@@ -535,6 +535,60 @@ def top_rated_products():
         conn.close()
 
 
+@app.route("/api/promotions", methods=["GET"])
+def api_list_promotions():
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT pr.id, pr.label, pr.discount_pct, pr.starts_at, pr.ends_at,
+                   p.id AS product_id, p.name AS product_name
+            FROM promotions pr
+            JOIN products p ON p.id = pr.product_id
+            WHERE pr.ends_at > NOW()
+            ORDER BY pr.starts_at
+            """
+        )
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            r["discount_pct"] = float(r["discount_pct"])
+            r["starts_at"] = r["starts_at"].isoformat()
+            r["ends_at"] = r["ends_at"].isoformat()
+            rows.append(r)
+        return jsonify({"count": len(rows), "results": rows})
+    finally:
+        conn.close()
+
+
+@app.route("/api/promotions", methods=["POST"])
+def api_create_promotion():
+    data = request.get_json(force=True)
+    required = ["product_id", "label", "discount_pct", "starts_at", "ends_at"]
+    missing = [f for f in required if f not in data]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO promotions (product_id, label, discount_pct, starts_at, ends_at)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (data["product_id"], data["label"], data["discount_pct"],
+             data["starts_at"], data["ends_at"]),
+        )
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        return jsonify({"id": new_id}), 201
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=8080)

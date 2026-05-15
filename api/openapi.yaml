@@ -536,6 +536,41 @@ components:
           example:
             error: connection refused
   schemas:
+    Promotion:
+      type: object
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        discount_pct:
+          type: number
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        product_id:
+          type: integer
+        product_name:
+          type: string
+    PromotionInput:
+      type: object
+      required: [product_id, label, discount_pct, starts_at, ends_at]
+      properties:
+        product_id:
+          type: integer
+        label:
+          type: string
+        discount_pct:
+          type: number
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
     Category:
       type: object
       required:
@@ -953,6 +988,47 @@ components:
         error:
           type: string
           minLength: 1
+/api/promotions:
+    get:
+      summary: List active promotions
+      operationId: listPromotions
+      tags: [Promotions]
+      responses:
+        '200':
+          description: Active promotions list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Promotion'
+    post:
+      summary: Create a promotion
+      operationId: createPromotion
+      tags: [Promotions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromotionInput'
+      responses:
+        '201':
+          description: Promotion created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
 tags:
 - name: Health
   description: Liveness and readiness probes
@@ -966,3 +1042,5 @@ tags:
   description: Order placement
 - name: Stats
   description: Aggregated platform statistics
+- name: Promotions
+  description: Time-limited product promotions

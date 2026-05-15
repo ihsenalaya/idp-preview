@@ -132,6 +132,12 @@
 
 <div class="container">
 
+  <!-- Promotions -->
+  <div class="card" data-testid="promotions-card">
+    <h2>🏷️ Promotions actives</h2>
+    <div id="promotions-section">Chargement…</div>
+  </div>
+
   <!-- PostgreSQL status -->
   <div class="card">
     <h2>Statut PostgreSQL</h2>
@@ -363,6 +369,30 @@
   document.getElementById('detail-overlay').addEventListener('click', function(e) {
     if (e.target === this) closeDetail();
   });
+
+  // Load active promotions
+  async function loadPromotions() {
+    const section = document.getElementById('promotions-section');
+    if (!section) return;
+    try {
+      const resp = await fetch('/api/promotions');
+      const data = await resp.json();
+      if (!data.results || !data.results.length) {
+        section.innerHTML = '<p style="color:#94a3b8;font-size:.85rem">Aucune promotion active.</p>';
+        return;
+      }
+      section.innerHTML = data.results.map(p =>
+        `<div class="promo-card" data-testid="promo-card">
+          <span class="promo-label">${p.label}</span>
+          <span class="promo-product">${p.product_name}</span>
+          <span class="promo-discount">-${p.discount_pct}%</span>
+        </div>`
+      ).join('');
+    } catch(e) {
+      section.innerHTML = '<p style="color:#ef4444;font-size:.82rem">Erreur chargement promotions.</p>';
+    }
+  }
+  loadPromotions();
 </script>
 </body>
 </html>
