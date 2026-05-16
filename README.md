@@ -664,6 +664,8 @@ spec:
       namespace: preview-operator-system
       key: token
     model: gpt-4o-mini          # gpt-4o-mini (fast + cheap) | gpt-4o (better quality)
+    temperature: "0.2"          # decimal string in [0,2]; 0=deterministic, higher=more diverse
+                                # default 0.2; bump to "0.7" for varied seed/tests, "0" for replay-stable
     seed:
       enabled: true             # generates + runs seed.sql
     tests:
@@ -1155,6 +1157,8 @@ spec:
       name: ai-api-key
       key: api-key
     model: gpt-4o-mini       # optional, default gpt-4o-mini
+    temperature: "0.2"       # optional decimal string in [0,2], default 0.2
+                             # (0 = deterministic, higher = more diverse output)
     seed:
       enabled: true          # optional, default true
     tests:
