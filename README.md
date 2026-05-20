@@ -419,17 +419,42 @@ The operator creates test jobs that call Microcks at `http://microcks.microcks.s
 
 kagent orchestrates AI agents inside Kubernetes. Install CRDs first, then the main chart.
 
+> **Pin kagent to 0.9.2.** Do **not** omit `--version`. The default (latest)
+> resolves to 0.9.4, which has a regression — `kagent-adk` creates the A2A
+> session under `user_id=admin@kagent.dev` but the ADK runner looks it up
+> under `user_id=A2A_USER_<ctx>`, so every agent run fails with
+> `SessionNotFoundError`. 0.9.2 is the validated version.
+
 ```bash
-# CRDs must be installed before the main chart
+# CRDs must be installed before the main chart — pin 0.9.2
 helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
+  --version 0.9.2 \
   --namespace kagent-system \
   --create-namespace
 
 helm install kagent oci://ghcr.io/kagent-dev/kagent/helm/kagent \
+  --version 0.9.2 \
   --namespace kagent-system
 
 kubectl -n kagent-system rollout status deployment/kagent-controller --timeout=120s
 ```
+
+> **If kagent 0.9.4 is already installed**, downgrading the chart is not
+> enough — 0.9.4 migrates the kagent database to a schema (v4) that the 0.9.2
+> controller cannot read (`no migration found for version 4` → CrashLoopBackOff).
+> Reset the kagent database during the downgrade:
+>
+> ```bash
+> helm upgrade kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
+>   --version 0.9.2 --namespace kagent-system
+> helm upgrade kagent oci://ghcr.io/kagent-dev/kagent/helm/kagent \
+>   --version 0.9.2 --namespace kagent-system --reuse-values
+> kubectl -n kagent-system scale deployment/kagent-controller --replicas=0
+> kubectl -n kagent-system exec deploy/kagent-postgresql -- \
+>   psql -U kagent -d postgres -c "DROP DATABASE kagent WITH (FORCE);" \
+>                                -c "CREATE DATABASE kagent OWNER kagent;"
+> kubectl -n kagent-system scale deployment/kagent-controller --replicas=1
+> ```
 
 #### Create the Azure OpenAI secret for kagent
 
@@ -1816,14 +1841,14 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | **Required on AKS** — ingress gateway + `preview-gateway`; `*.preview.<zone>` DNS must point at the gateway IP |
-| Preview Operator | `preview-operator-system` | **1.0.46** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.47** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`; `LABELS` must include every label in the workflow's `runs-on` (e.g. `self-hosted,aks,test1`) |
-| Preview Extension | `preview-operator-system` | **1.0.46** | Copilot commands + checkpoint API; versioned with the operator |
+| Preview Extension | `preview-operator-system` | **1.0.47** | Copilot commands + checkpoint API; versioned with the operator |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
-| kagent | `kagent-system` | latest | 4 agents required — see *AKS production setup* below |
+| kagent | `kagent-system` | **0.9.2 (pinned)** | 0.9.4 breaks all agents with `SessionNotFoundError` — see *AKS production setup* below |
 
 ---
 
@@ -1899,21 +1924,38 @@ VirtualService CRD). If Istio is installed **after** the operator, restart
 the operator so it switches from Nginx Ingress to Istio VirtualService:
 `kubectl -n preview-operator-system rollout restart deployment/preview-operator`.
 
-### 5. Operator / extension version 1.0.46
+### 5. Operator and extension version 1.0.47
 
-1.0.46 fixes the e2e checkpoint-restore race (`reset_db()` 60s timeout /
-2-second reconcile loop) and makes the AI seed honour an explicit
-`aiEnrichment.seed.enabled`. Earlier versions leave the database empty for
-PRs without a migration. Always run operator and extension on the **same**
-version. See the *Release notes — 1.0.46* section of the preview-operator
-README.
+Run the operator and extension on the **same** version — **1.0.47**. Fixes
+since the first AKS deployment:
+
+- **1.0.46** — e2e checkpoint-restore race: the extension now runs the
+  restore in a uniquely-named Job, fixing the `reset_db()` 60s timeout and
+  the 2-second reconcile loop. The AI seed honours an explicit
+  `aiEnrichment.seed.enabled` — earlier versions silently skipped the seed
+  for PRs without a migration, leaving the database empty.
+- **1.0.47** — `callKagentAgent` now calls the agent named in
+  `spec.kagent.agentName` (default `preview-troubleshooter-agent`). It
+  previously hard-coded a non-deployed `failure-analyst-agent` service, so
+  the troubleshooter analysis never ran.
+
+See the *Release notes — 1.0.47* section of the preview-operator README.
+
+### 6. kagent pinned to 0.9.2
+
+kagent 0.9.4 (current latest) regressed A2A session handling — every agent
+run fails with `SessionNotFoundError`. Install/keep kagent at **0.9.2** (see
+Step 4c, including the database-reset procedure when downgrading from 0.9.4).
+With 0.9.2 the diff-analyzer, test-strategist and troubleshooter agents all
+run correctly (verified: A2A `POST / 200`, LLM call OK, no session error).
 
 ### Known issues
 
-| Issue | Detail | Status |
-|-------|--------|--------|
-| `POST /api/categories` contract test fails on a seeded DB | Microcks replays the OpenAPI example (`slug: electronics`), which collides with the AI-seeded `electronics` category; the app returns `500` on the `UNIQUE` violation instead of a clean `4xx`. | App fix: make `api_create_category` idempotent (`INSERT … ON CONFLICT (slug)`) or return `409`. |
-| e2e product-grid not rendered | The frontend SPA loads (`preview_badge_shown` passes) but `product-grid`/`product-detail` time out. Backend + regression are green, so this is a frontend `/api` proxy / rendering issue in the sample app. | Investigate `frontend.py` `/api` proxy against `svc-backend`. |
+| Issue | Detail | Workaround / fix |
+|-------|--------|------------------|
+| `POST /api/categories` contract test fails on a seeded DB | Microcks replays the OpenAPI example (`slug: electronics`), which collides with the AI-seeded `electronics` category; the app returns `500` on the `UNIQUE` violation instead of a clean `4xx`. | Sample-app fix: make `api_create_category` idempotent (`INSERT … ON CONFLICT (slug)`) or return `409`. |
+| e2e product-grid not rendered | The frontend SPA loads (`preview_badge_shown` passes) but `product-grid`/`product-detail` time out even with a seeded DB. | Sample-app fix: investigate the `frontend.py` `/api` proxy to `svc-backend`. |
+| `status.kagent` / `status.diffAnalysis` stuck on `Running` | The operator can lose the terminal status write on a resourceVersion conflict; the `Running` idempotency guard then blocks retries even though the agent finished. | Reset and retrigger: `kubectl patch preview pr-<N> --subresource=status --type=merge -p '{"status":{"kagent":null}}'`, then annotate the CR to force a reconcile. |
 
 ---
 
@@ -1929,7 +1971,7 @@ README.
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.46** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.47** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
