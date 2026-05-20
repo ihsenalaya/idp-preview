@@ -465,6 +465,18 @@ def api_related_products(product_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/products/count", methods=["GET"])
+def api_products_count():
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM products")
+        total = cur.fetchone()[0]
+        cur.close(); conn.close()
+        return jsonify({"count": total})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
     return jsonify({

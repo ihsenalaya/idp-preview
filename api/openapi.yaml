@@ -270,6 +270,30 @@ paths:
                       review_count: 3
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/products/count:
+    get:
+      operationId: countProducts
+      summary: Total number of products in the catalogue
+      tags:
+      - Products
+      responses:
+        '200':
+          description: Product count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count:
+                    type: integer
+                    minimum: 0
+              examples:
+                Example_1:
+                  value:
+                    count: 12
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}:
     get:
       operationId: getProduct
