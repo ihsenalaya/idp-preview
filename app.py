@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 app = Flask(__name__)
 
@@ -80,7 +80,8 @@ def fetch_all_dicts(cur):
 
 @app.route("/healthz")
 def healthz():
-    return "ok", 200
+    # Explicit text/plain (no charset) to match the OpenAPI contract for /healthz.
+    return Response("ok", status=200, content_type="text/plain")
 
 
 @app.route("/ping")
