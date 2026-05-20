@@ -38,14 +38,15 @@ def init_db():
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
-            id           SERIAL PRIMARY KEY,
-            name         TEXT NOT NULL,
-            description  TEXT,
-            category_id  INTEGER REFERENCES categories(id),
-            price        NUMERIC(10,2) NOT NULL,
-            stock        INTEGER       NOT NULL DEFAULT 0,
-            discount_pct NUMERIC(5,2)  DEFAULT 0,
-            created_at   TIMESTAMPTZ   DEFAULT NOW()
+            id                SERIAL PRIMARY KEY,
+            name              TEXT NOT NULL,
+            description       TEXT,
+            category_id       INTEGER REFERENCES categories(id),
+            price             NUMERIC(10,2) NOT NULL,
+            stock             INTEGER       NOT NULL DEFAULT 0,
+            discount_pct      NUMERIC(5,2)  DEFAULT 0,
+            restock_threshold INTEGER       NOT NULL DEFAULT 5,
+            created_at        TIMESTAMPTZ   DEFAULT NOW()
         )
     """)
     cur.execute("""
@@ -459,6 +460,29 @@ def api_related_products(product_id):
             p["price"]            = float(p["price"])
             p["discount_pct"]     = float(p["discount_pct"] or 0)
             p["discounted_price"] = float(p["discounted_price"] or p["price"])
+        cur.close(); conn.close()
+        return jsonify({"products": products, "count": len(products)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/products/low-stock", methods=["GET"])
+def api_low_stock_products():
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT p.id, p.name, p.description, p.price, p.stock,
+                   p.discount_pct, p.restock_threshold,
+                   c.name AS category_name
+            FROM products p
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE p.stock <= p.restock_threshold
+            ORDER BY p.stock ASC, p.id ASC
+        """)
+        products = fetch_all_dicts(cur)
+        for p in products:
+            p["price"]        = float(p["price"])
+            p["discount_pct"] = float(p["discount_pct"] or 0)
         cur.close(); conn.close()
         return jsonify({"products": products, "count": len(products)})
     except Exception as e:

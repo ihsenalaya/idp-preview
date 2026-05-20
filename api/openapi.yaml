@@ -270,6 +270,51 @@ paths:
                       review_count: 3
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/products/low-stock:
+    get:
+      operationId: listLowStockProducts
+      summary: List products at or below their restock threshold
+      tags:
+      - Products
+      responses:
+        '200':
+          description: Products whose stock has reached the restock threshold
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, products]
+                properties:
+                  count:
+                    type: integer
+                    minimum: 0
+                  products:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LowStockProduct'
+              examples:
+                Example_1:
+                  value:
+                    count: 2
+                    products:
+                    - id: 4
+                      name: Leather Notebook
+                      description: A5 hardcover notebook
+                      price: 24.99
+                      stock: 1
+                      discount_pct: 0.0
+                      restock_threshold: 5
+                      category_name: Stationery
+                    - id: 7
+                      name: Wireless Mouse
+                      description: Ergonomic 2.4GHz mouse
+                      price: 19.99
+                      stock: 3
+                      discount_pct: 5.0
+                      restock_threshold: 10
+                      category_name: Electronics
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}:
     get:
       operationId: getProduct
@@ -800,6 +845,43 @@ components:
         review_count:
           type: integer
           minimum: 1
+    LowStockProduct:
+      type: object
+      required:
+      - id
+      - name
+      - price
+      - stock
+      - discount_pct
+      - restock_threshold
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          nullable: true
+        price:
+          type: number
+          format: float
+          minimum: 0
+        stock:
+          type: integer
+          minimum: 0
+        discount_pct:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        restock_threshold:
+          type: integer
+          minimum: 0
+        category_name:
+          type: string
+          nullable: true
     Review:
       type: object
       required:
