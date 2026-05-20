@@ -270,6 +270,30 @@ paths:
                       review_count: 3
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/products/in-stock:
+    get:
+      operationId: countInStockProducts
+      summary: Number of products currently in stock
+      tags:
+      - Products
+      responses:
+        '200':
+          description: Count of products with stock greater than zero
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count:
+                    type: integer
+                    minimum: 0
+              examples:
+                Example_1:
+                  value:
+                    count: 8
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/products/{id}:
     get:
       operationId: getProduct
