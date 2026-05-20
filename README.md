@@ -1815,15 +1815,105 @@ helm repo update
 |-----------|-----------|---------|-------|
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
-| Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.43** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Istio | `istio-system` | 1.23.0 | **Required on AKS** — ingress gateway + `preview-gateway`; `*.preview.<zone>` DNS must point at the gateway IP |
+| Preview Operator | `preview-operator-system` | **1.0.46** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
-| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **1.0.12** | Copilot commands + checkpoint API |
+| GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false`; `LABELS` must include every label in the workflow's `runs-on` (e.g. `self-hosted,aks,test1`) |
+| Preview Extension | `preview-operator-system` | **1.0.46** | Copilot commands + checkpoint API; versioned with the operator |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
-| kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
+| kagent | `kagent-system` | latest | 4 agents required — see *AKS production setup* below |
+
+---
+
+## AKS production setup — required additions
+
+The numbered steps above bring up the cluster, but a working end-to-end
+pipeline on AKS needs the following. These are not optional on a real
+(multi-PR) cluster — they were the gap between "installed" and "green".
+
+### 1. Deploy **all four** kagent agents (Step 4c is not enough)
+
+The Preview CR references three kagent agents plus a GitHub MCP server.
+Deploying only `preview-troubleshooter-agent` leaves `diffAnalysis` stuck
+in `Running` and the test-strategist trigger Job failing (silent fallback
+to FullSuite).
+
+```bash
+# GitHub token in kagent-system (the github-mcp-server needs it)
+TOKEN=$(kubectl get secret preview-github-token -n preview-operator-system \
+  -o jsonpath='{.data.token}' | base64 -d)
+kubectl create secret generic preview-github-token -n kagent-system \
+  --from-literal=token="$TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f k8s/kagent/github-mcp-server.yaml          # Deployment + Service + RemoteMCPServer
+kubectl apply -f k8s/kagent/preview-troubleshooter-agent.yaml
+kubectl apply -f k8s/kagent/preview-diff-analyzer-agent.yaml
+kubectl apply -f <preview-operator>/k8s/kagent/agents/test-strategist-agent.yaml
+
+# all four must reach READY=True ACCEPTED=True
+kubectl -n kagent-system get agents | grep -E 'preview-|test-strateg'
+kubectl -n kagent-system get remotemcpservers   # github-mcp-server must be ACCEPTED=True
+```
+
+### 2. GitHub runner — match every `runs-on` label
+
+`.github/workflows/preview.yaml` uses `runs-on: [self-hosted, aks, test1]`.
+The runner must advertise **all** of those labels or the job stays `queued`
+forever:
+
+```bash
+kubectl -n github-runner set env deployment/github-runner LABELS=self-hosted,aks,test1
+kubectl -n github-runner rollout status deployment/github-runner --timeout=120s
+```
+
+### 3. AKS node pool — keep a 2-node floor
+
+The platform footprint (operator, kagent, microcks, observability) nearly
+fills one `Standard_D4s_v3`. With the autoscaler floor at 1, the first
+preview's pods cannot be scheduled (`Insufficient cpu`) before a new node
+joins, and the deployment times out → `Failed`. Keep a floor of 2:
+
+```bash
+az aks nodepool update --resource-group <RG> --cluster-name <CLUSTER> \
+  --name nodepool1 --update-cluster-autoscaler --min-count 2 --max-count 4
+```
+
+### 4. Istio wildcard DNS must point at the live gateway IP
+
+Step 3b creates the `*.preview.<zone>` A record. If the cluster (or the
+gateway `LoadBalancer`) is ever recreated, the gateway IP changes and the
+record goes stale — preview URLs then resolve to a dead IP. After any
+gateway change:
+
+```bash
+ISTIO_IP=$(kubectl -n istio-system get svc istio-ingressgateway \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+az network dns record-set a show --zone-name <zone> --resource-group <RG> \
+  --name '*.preview' --query aRecords -o tsv          # compare with $ISTIO_IP
+```
+
+The operator auto-detects Istio at start-up (`istioAvailable()` checks the
+VirtualService CRD). If Istio is installed **after** the operator, restart
+the operator so it switches from Nginx Ingress to Istio VirtualService:
+`kubectl -n preview-operator-system rollout restart deployment/preview-operator`.
+
+### 5. Operator / extension version 1.0.46
+
+1.0.46 fixes the e2e checkpoint-restore race (`reset_db()` 60s timeout /
+2-second reconcile loop) and makes the AI seed honour an explicit
+`aiEnrichment.seed.enabled`. Earlier versions leave the database empty for
+PRs without a migration. Always run operator and extension on the **same**
+version. See the *Release notes — 1.0.46* section of the preview-operator
+README.
+
+### Known issues
+
+| Issue | Detail | Status |
+|-------|--------|--------|
+| `POST /api/categories` contract test fails on a seeded DB | Microcks replays the OpenAPI example (`slug: electronics`), which collides with the AI-seeded `electronics` category; the app returns `500` on the `UNIQUE` violation instead of a clean `4xx`. | App fix: make `api_create_category` idempotent (`INSERT … ON CONFLICT (slug)`) or return `409`. |
+| e2e product-grid not rendered | The frontend SPA loads (`preview_badge_shown` passes) but `product-grid`/`product-detail` time out. Backend + regression are green, so this is a frontend `/api` proxy / rendering issue in the sample app. | Investigate `frontend.py` `/api` proxy against `svc-backend`. |
 
 ---
 
@@ -1839,7 +1929,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.43** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.46** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
