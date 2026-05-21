@@ -21,7 +21,7 @@ spec:
   source:
     repoURL: ghcr.io/ihsenalaya/charts
     chart: preview-operator
-    targetRevision: 1.0.47
+    targetRevision: 1.0.48
     helm:
       valuesObject:
         image:

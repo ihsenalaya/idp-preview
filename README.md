@@ -352,11 +352,11 @@ AOAI_ENDPOINT=$(az cognitiveservices account show \
   --query "properties.endpoint" -o tsv | tr -d '\r\n')
 
 helm install preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 1.0.47 \
+  --version 1.0.48 \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ihsenalaya/preview-operator \
-  --set image.tag=1.0.47 \
+  --set image.tag=1.0.48 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
@@ -1768,10 +1768,10 @@ Cause: the CRD schema is missing a field that the controller writes to `status` 
 Fix: always apply the CRD **before** helm upgrade.
 
 ```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 1.0.47 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 1.0.48 \
   | tail -n +3 | kubectl apply -f -
 helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 1.0.47 --namespace preview-operator-system
+  --version 1.0.48 --namespace preview-operator-system
 ```
 
 ### Preview stuck in Provisioning
@@ -1827,12 +1827,12 @@ helm repo update
 | cert-manager | `cert-manager` | v1.20.2 | |
 | ingress-nginx | `ingress-nginx` | latest | `admissionWebhooks.enabled=false` required |
 | Istio | `istio-system` | 1.23.0 | Ingress gateway, VirtualService routing, `*.preview.ihsenalaya.xyz` |
-| Preview Operator | `preview-operator-system` | **1.0.43** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
+| Preview Operator | `preview-operator-system` | **1.0.48** | Multi-service, sequential test pipeline, AI enrichment, contract testing, kagent, Istio support |
 | OpenTelemetry Operator | `opentelemetry-operator-system` | latest | |
 | Jaeger (all-in-one) | `observability` | 1.67.0 | |
 | OTel Collector + Instrumentation | `observability` | 0.149.0 | |
 | GitHub Runner | `github-runner` | `myoung34/github-runner:latest` | `EPHEMERAL=false` |
-| Preview Extension | `preview-operator-system` | **1.0.12** | Copilot commands + checkpoint API |
+| Preview Extension | `preview-operator-system` | **1.0.48** | Copilot commands + checkpoint API |
 | Microcks | `microcks` | latest | OPEN_API_SCHEMA contract testing |
 | kagent | `kagent-system` | latest | AI troubleshooter — read-only cluster analysis |
 
@@ -1850,7 +1850,7 @@ helm repo update
 
 | Component | Version | Role |
 |-----------|---------|------|
-| preview-operator | **1.0.43** | Provisions and orchestrates preview environments |
+| preview-operator | **1.0.48** | Provisions and orchestrates preview environments |
 | idp-preview (this app) | latest | Sample Flask REST API + frontend |
 | Microcks | 1.14.0 | OpenAPI contract testing (OPEN_API_SCHEMA runner) |
 | kagent | 0.9.2 | AI agent framework (Azure OpenAI gpt-4o-mini) |
@@ -1871,7 +1871,7 @@ helm repo update
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Preview Operator 1.0.43                                            │
+│  Preview Operator 1.0.48                                            │
 │                                                                     │
 │  Namespace preview-pr-<N>                                          │
 │   ├── PostgreSQL + backend (app:8080) + frontend (3000)            │

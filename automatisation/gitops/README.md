@@ -32,7 +32,7 @@ ensuite, puis les operateurs, puis les workloads, enfin les ressources custom.
 | opentelemetry-operator | open-telemetry 0.113.1 | Helm |
 | microcks | microcks.io/helm 1.14.0 | Helm |
 | kagent-crds / kagent | ghcr.io/kagent-dev (OCI) 0.9.2 | Helm |
-| preview-operator | ghcr.io/ihsenalaya/charts (OCI prive) 1.0.47 | Helm |
+| preview-operator | ghcr.io/ihsenalaya/charts (OCI prive) 1.0.48 | Helm |
 | external-secrets-config | `automatisation/gitops/manifests/external-secrets/` | manifests |
 | observability | `jaeger.yaml` + `otel.yaml` | manifests |
 | github-runner | `runner.yaml` | manifests |
