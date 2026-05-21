@@ -162,7 +162,84 @@ ressources custom**.
 
 ---
 
-## 5. Suppression
+## 5. Bascule vers un nouveau cluster
+
+Procédure générique pour migrer la plateforme d'un cluster existant vers un
+nouveau (montée de version Kubernetes, changement de région, recréation
+propre…). Le principe : on **monte le nouveau cluster en parallèle**, on le
+valide, on bascule le trafic, puis on décommissionne l'ancien.
+
+### 5.1 — Provisionner le nouveau cluster
+
+Choisir un **nom distinct** pour ne pas écraser l'ancien :
+
+```bash
+cd automatisation/terraform
+terraform apply -var 'cluster_name=idp-preview-v2'
+# (ou modifier cluster_name dans terraform.tfvars)
+```
+
+Terraform crée le nouveau cluster **et** son federated credential ESO (chaque
+cluster a son propre OIDC issuer — c'est géré automatiquement).
+
+### 5.2 — Déployer la plateforme dessus
+
+Rejouer les **étapes 2 à 4** sur le nouveau cluster : `get-credentials`,
+`bootstrap.sh`, puis synchronisation des waves.
+
+### 5.3 — Basculer le contexte kubectl
+
+```bash
+az aks get-credentials --resource-group idp-preview-rg \
+  --name idp-preview-v2 --overwrite-existing
+kubectl config use-context idp-preview-v2
+kubectl config get-contexts          # vérifier le contexte actif (*)
+```
+
+### 5.4 — Repointer le DNS wildcard
+
+Le nouvel ingress gateway Istio a une **nouvelle IP publique**. Récupérer l'IP
+et mettre à jour l'enregistrement DNS `*.preview.<domaine>` :
+
+```bash
+NEW_IP=$(kubectl -n istio-system get svc istio-ingressgateway \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Nouvelle IP : $NEW_IP"
+
+az network dns record-set a delete \
+  --resource-group <DNS_RG> --zone-name <ZONE> --name '*.preview' --yes
+az network dns record-set a add-record \
+  --resource-group <DNS_RG> --zone-name <ZONE> \
+  --record-set-name '*.preview' --ipv4-address "$NEW_IP" --ttl 300
+```
+
+Tant que le DNS n'est pas propagé, tester via port-forward :
+`kubectl -n <preview-ns> port-forward svc/svc-frontend 3000:3000`.
+
+### 5.5 — Basculer le pipeline CI
+
+Le runner GitHub Actions tourne **dans le cluster**. Une fois le nouveau
+cluster déployé, son runner (label `test1`) se ré-enregistre et prend le
+relais : les previews suivantes se déploient sur le nouveau cluster. Vérifier :
+
+```bash
+gh api repos/<owner>/<repo>/actions/runners \
+  --jq '.runners[] | {name,status,labels:[.labels[].name]}'
+```
+
+### 5.6 — Vérifier puis décommissionner l'ancien
+
+```bash
+kubectl get applications -n argocd      # 17 Applications Healthy
+# ouvrir/mettre à jour une PR pour valider un Preview de bout en bout
+```
+
+Une fois la bascule validée, supprimer l'ancien cluster (voir §6) — en pointant
+Terraform sur l'**ancien** `cluster_name`, ou via `az aks delete`.
+
+---
+
+## 6. Suppression
 
 ```bash
 cd automatisation/terraform
