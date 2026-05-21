@@ -17,7 +17,7 @@ spec:
     repoURL: https://github.com/ihsenalaya/idp-preview
     # Avant merge : pointer sur la branche de la PR pour valider dans l'UI ArgoCD.
     # Apres merge : remplacer par `main`.
-    targetRevision: feat/argocd-gitops
+    targetRevision: main
     path: automatisation/gitops/apps
     directory:
       recurse: false
