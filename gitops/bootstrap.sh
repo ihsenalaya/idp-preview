@@ -17,6 +17,7 @@ set -euo pipefail
 
 ARGOCD_VERSION="${ARGOCD_VERSION:-v3.2.0}"
 ARGOCD_NAMESPACE="argocd"
+ESO_CHART_VERSION="${ESO_CHART_VERSION:-2.5.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Cluster cible : $(kubectl config current-context)"
@@ -36,6 +37,19 @@ kubectl -n "${ARGOCD_NAMESPACE}" rollout status deploy/argocd-repo-server --time
 echo "==> Application du projet et du depot OCI public..."
 kubectl apply -f "${SCRIPT_DIR}/argocd-config/argocd-project.yaml"
 kubectl apply -f "${SCRIPT_DIR}/argocd-config/repo-kagent-oci.yaml"
+
+# 3b. CRDs External Secrets (server-side)
+# Les CRDs ESO (~335 Ko) depassent la limite d'annotation de l'apply
+# client-side d'Argo CD. On les installe ici en server-side ; l'Application
+# external-secrets utilise installCRDs=false.
+echo "==> Pre-installation des CRDs External Secrets (server-side)..."
+helm repo add external-secrets https://charts.external-secrets.io >/dev/null 2>&1 || true
+helm repo update external-secrets >/dev/null 2>&1
+helm template external-secrets external-secrets/external-secrets \
+  --version "${ESO_CHART_VERSION}" --include-crds --set installCRDs=true \
+  --namespace external-secrets \
+  | python3 -c 'import sys,yaml; yaml.safe_dump_all((d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="CustomResourceDefinition"), sys.stdout)' \
+  | kubectl apply --server-side --force-conflicts -f -
 
 # 4. App-of-Apps racine
 echo "==> Deploiement de l'App-of-Apps racine..."
