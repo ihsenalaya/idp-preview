@@ -93,14 +93,16 @@ kubectl annotate externalsecret -A --all force-sync="$(date +%s)" --overwrite
 
 ## Migration depuis les secrets crees a la main
 
-Le cluster contient deja ces `Secret` crees manuellement. Avant le premier sync
-de l'app `external-secrets-config`, les supprimer pour qu'ESO en prenne la
-propriete proprement (les valeurs sont identiques — aucune coupure de service) :
+Le cluster contenait deja ces `Secret` crees manuellement. ESO v2.5 les a
+**adoptes** automatiquement lors du premier sync de `external-secrets-config`
+(les valeurs etant identiques, aucune coupure de service). Aucune action
+manuelle n'a ete necessaire.
+
+Si une adoption echoue (conflit de propriete), supprimer le secret concerne et
+laisser ESO le recreer :
 
 ```bash
-kubectl delete secret preview-github-token ai-api-key azure-openai-credentials -n preview-operator-system
-kubectl delete secret preview-github-token kagent-openai ghcr-pull-secret       -n kagent-system
-kubectl delete secret runner-token -n github-runner
+kubectl delete secret <nom> -n <namespace>   # ESO le regenere depuis Key Vault
 ```
 
 ## Secrets hors perimetre

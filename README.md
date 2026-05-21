@@ -331,21 +331,31 @@ Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4
 
 ### Step 4 — Install the Preview Operator
 
-#### AKS / Production — use the pre-built GHCR image
+> **Tout automatiser avec Argo CD.** Pour une installation GitOps de
+> l'opérateur **et** de toutes ses dépendances (cert-manager, Istio, Microcks,
+> kagent, observabilité, External Secrets…), voir le dossier
+> [`gitops/`](gitops/README.md) : un App-of-Apps Argo CD remplace toutes les
+> étapes manuelles de cette section.
+
+#### AKS / Production — chart Helm OCI publié
+
+Le chart `preview-operator` est publié sur GHCR (package privé — s'authentifier
+avec un PAT disposant du scope `read:packages`). Les CRDs sont incluses dans le
+chart et appliquées à la première installation.
 
 ```bash
-# Apply the CRD (Helm does not update CRDs on upgrade)
-kubectl apply -f charts/preview-operator/crds/platform.company.io_previews.yaml
+helm registry login ghcr.io -u <github-user>   # PAT avec read:packages
 
 AOAI_ENDPOINT=$(az cognitiveservices account show \
   --name "preview-openai" --resource-group "<YOUR_RG>" \
   --query "properties.endpoint" -o tsv | tr -d '\r\n')
 
-helm install preview-operator ./charts/preview-operator \
+helm install preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
+  --version 1.0.47 \
   --namespace preview-operator-system \
   --create-namespace \
   --set image.repository=ghcr.io/ihsenalaya/preview-operator \
-  --set image.tag=1.0.43 \
+  --set image.tag=1.0.47 \
   --set previewDomain=preview.ihsenalaya.xyz \
   --set "ai.apiURL=${AOAI_ENDPOINT}openai/deployments/gpt-4o-mini"
 
@@ -1757,10 +1767,10 @@ Cause: the CRD schema is missing a field that the controller writes to `status` 
 Fix: always apply the CRD **before** helm upgrade.
 
 ```bash
-helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 0.13.8 \
+helm show crds oci://ghcr.io/ihsenalaya/charts/preview-operator --version 1.0.47 \
   | tail -n +3 | kubectl apply -f -
 helm upgrade preview-operator oci://ghcr.io/ihsenalaya/charts/preview-operator \
-  --version 0.13.8 --namespace preview-operator-system
+  --version 1.0.47 --namespace preview-operator-system
 ```
 
 ### Preview stuck in Provisioning
