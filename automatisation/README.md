@@ -71,22 +71,19 @@ Ce script : installe Argo CD, pré-installe les CRDs External Secrets en
 server-side, applique le projet Argo CD et déploie l'**App-of-Apps racine**.
 Il affiche le mot de passe admin Argo CD à la fin.
 
-### Étape 4 — Synchroniser les Applications
+### Étape 4 — Synchronisation automatique
 
-L'App-of-Apps crée 16 Applications enfants, en **sync manuel** par défaut.
-Les synchroniser **dans l'ordre des waves** (voir §4) :
+L'App-of-Apps crée 16 Applications enfants, toutes en **sync automatique**
+(`automated` + `selfHeal` + `prune`). Argo CD déploie et reconcilie tout seul,
+dans l'ordre des waves (voir §4) — rien à lancer manuellement.
 
 ```bash
-# Accès à l'UI Argo CD
+# Accès à l'UI Argo CD pour suivre l'avancement
 kubectl -n argocd port-forward svc/argocd-server 8080:443
 # https://localhost:8080  (user: admin)
 
-# ou en CLI, wave par wave :
-argocd app sync cert-manager external-secrets kagent-crds istio-base   # wave -2
-argocd app sync ingress-nginx istiod opentelemetry-operator external-secrets-config  # wave -1
-argocd app sync istio-ingressgateway microcks kagent                   # wave 0
-argocd app sync preview-operator observability github-runner           # wave 1
-argocd app sync kagent-agents istio-preview-gateway                    # wave 2
+# Forcer une synchro immédiate (optionnel) :
+argocd app sync -l argocd.argoproj.io/instance=idp-preview-root
 ```
 
 ### Étape 5 — Vérifier

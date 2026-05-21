@@ -58,29 +58,26 @@ kubectl -n argocd port-forward svc/argocd-server 8080:443
 
 ## Modele de synchronisation
 
-- **root-app** : sync **automatique** — ne cree que des objets `Application`,
-  aucun impact sur les workloads.
-- **Applications enfants** : sync **manuel** par defaut. Argo CD affiche l'etat
-  et le diff de chaque composant ; rien n'est modifie tant que vous ne lancez
-  pas `Sync`. Cela permet de valider l'adoption d'un cluster existant.
+Toutes les Applications sont en **sync automatique** avec **self-heal** et
+**prune** (`automated: { prune: true, selfHeal: true }`) :
 
-Synchroniser un composant apres revue du diff :
+- **root-app** : cree et met a jour les objets `Application` enfants.
+- **Applications enfants** : Argo CD reconcilie en continu. Toute derive par
+  rapport au Git est corrigee automatiquement (self-heal) et une ressource
+  retiree du Git est elaguee (prune).
+
+Consequence : le cluster **converge en permanence** vers l'etat decrit dans Git
+— pas de derive ni de composant casse qui passe inapercu.
+
+Forcer une synchronisation immediate (sinon Argo CD reconcilie de lui-meme dans
+les ~3 min) :
 
 ```bash
-argocd app sync cert-manager
-# ou, pour tout synchroniser :
 argocd app sync -l argocd.argoproj.io/instance=idp-preview-root
 ```
 
-Pour passer un composant en sync automatique apres validation, ajouter dans son
-fichier `automatisation/gitops/apps/NN-*.yaml` :
-
-```yaml
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
+Pour suspendre temporairement l'auto-sync d'un composant (ex. debug), retirer
+le bloc `automated:` de son fichier `automatisation/gitops/apps/NN-*.yaml`.
 
 ## Adoption d'un cluster existant
 
