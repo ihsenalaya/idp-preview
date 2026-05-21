@@ -26,7 +26,7 @@ spec:
       valuesObject:
         image:
           repository: ghcr.io/ihsenalaya/preview-operator
-          tag: 1.0.47
+          tag: 1.0.48
         previewDomain: preview.ihsenalaya.xyz
         ai:
           apiURL: https://preview-openai-idp.openai.azure.com/openai/deployments/gpt-4o-mini
