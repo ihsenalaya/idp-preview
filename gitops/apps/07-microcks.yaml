@@ -1,7 +1,10 @@
 # Microcks — tests de contrat OpenAPI (runner OPEN_API_SCHEMA). Wave 0.
 #
-# Les URLs nip.io encodent l'IP publique du LoadBalancer ingress-nginx
-# (20.102.24.255). Si cette IP change, mettre a jour les deux valeurs ci-dessous.
+# ingresses=false : aucune Ingress n'est creee. L'operateur appelle Microcks
+# via le service in-cluster (microcks.microcks.svc.cluster.local:8080) — le
+# README precise qu'aucune ingress n'est requise pour cet usage. Cela rend la
+# config portable (pas d'IP de LoadBalancer figee, valable sur tout cluster).
+# Acces a l'UI Microcks : `kubectl -n microcks port-forward svc/microcks 8080`.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,14 +22,13 @@ spec:
     targetRevision: 1.14.0
     helm:
       valuesObject:
+        ingresses: false
         microcks:
           generateCert: false
-          ingressClassName: nginx
-          url: microcks.20.102.24.255.nip.io
+          url: microcks.microcks.svc.cluster.local
         keycloak:
           generateCert: false
-          ingressClassName: nginx
-          url: keycloak.20.102.24.255.nip.io
+          url: microcks-keycloak.microcks.svc.cluster.local
           privateUrl: http://microcks-keycloak.microcks.svc.cluster.local:8080
   destination:
     server: https://kubernetes.default.svc
