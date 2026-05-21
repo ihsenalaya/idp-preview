@@ -13,6 +13,7 @@ from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent, CallToolResult
 from starlette.applications import Starlette
+from starlette.responses import Response
 from starlette.routing import Mount, Route
 import uvicorn
 
@@ -171,6 +172,11 @@ def create_app():
     async def handle_sse(request):
         async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
+        # Starlette appelle `await response(...)` sur la valeur retournee par
+        # l'endpoint. La reponse SSE est deja envoyee/cloturee par le context
+        # manager ci-dessus ; on retourne une Response vide pour eviter
+        # `TypeError: 'NoneType' object is not callable`.
+        return Response()
 
     return Starlette(
         routes=[

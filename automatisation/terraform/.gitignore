@@ -2,6 +2,9 @@
 *.tfstate
 *.tfstate.*
 .terraform/
+# Fichiers de plan (transitoires, peuvent contenir des donnees sensibles).
+tfplan
+*.tfplan
 crash.log
 crash.*.log
 override.tf

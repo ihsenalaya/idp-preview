@@ -5,6 +5,7 @@
 # Contenu deploye :
 #   k8s/kagent/rbac-readonly.yaml
 #   k8s/kagent/jaeger-mcp-server.yaml          (image GHCR privee -> ghcr-pull-secret)
+#   k8s/kagent/github-mcp-server.yaml          (image GHCR privee -> ghcr-pull-secret)
 #   k8s/kagent/preview-troubleshooter-agent.yaml
 #   k8s/kagent/agents/test-strategist-agent.yaml
 #   k8s/kagent/agents/preview-diff-analyzer.yaml
