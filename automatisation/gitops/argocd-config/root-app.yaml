@@ -1,9 +1,9 @@
 # App-of-Apps : Application racine qui deploie toutes les Applications
-# enfants decrites dans gitops/apps/.
+# enfants decrites dans automatisation/gitops/apps/.
 #
 # Le root-app est en sync automatique : il ne fait que creer/mettre a jour
 # les objets Application (aucun impact sur les workloads). Chaque Application
-# enfant est en sync MANUEL par defaut — voir gitops/README.md.
+# enfant est en sync MANUEL par defaut — voir automatisation/gitops/README.md.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -18,7 +18,7 @@ spec:
     # Avant merge : pointer sur la branche de la PR pour valider dans l'UI ArgoCD.
     # Apres merge : remplacer par `main`.
     targetRevision: feat/argocd-gitops
-    path: gitops/apps
+    path: automatisation/gitops/apps
     directory:
       recurse: false
   destination:

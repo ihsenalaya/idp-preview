@@ -32,7 +32,7 @@ External Secrets Operator  ──génère──▶  Secrets K8s natifs
 | Federated credential | `eso-external-secrets` | sujet `system:serviceaccount:external-secrets:external-secrets` |
 
 > Le **client-id** est un identifiant, pas un secret : il est volontairement
-> committe dans `gitops/apps/00-external-secrets.yaml`.
+> committe dans `automatisation/gitops/apps/00-external-secrets.yaml`.
 
 ## Reproduire la configuration Azure (cluster neuf)
 
@@ -76,7 +76,7 @@ az identity federated-credential create --name eso-external-secrets \
   --subject "system:serviceaccount:external-secrets:external-secrets" \
   --audiences "api://AzureADTokenExchange"
 
-# 7. Reporter $ESO_CLIENT_ID dans gitops/apps/00-external-secrets.yaml
+# 7. Reporter $ESO_CLIENT_ID dans automatisation/gitops/apps/00-external-secrets.yaml
 #    (serviceAccount.annotations."azure.workload.identity/client-id")
 ```
 

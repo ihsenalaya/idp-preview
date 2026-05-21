@@ -9,7 +9,7 @@ est installe et reconcilie automatiquement.
 ```
 bootstrap.sh
   └─ installe Argo CD + applique root-app (App-of-Apps)
-       └─ root-app  ──synchronise──▶  gitops/apps/*.yaml  (14 Applications)
+       └─ root-app  ──synchronise──▶  automatisation/gitops/apps/*.yaml  (14 Applications)
                                           │
    wave -2 : external-secrets · cert-manager · kagent-crds · istio-base
    wave -1 : external-secrets-config · ingress-nginx · istiod · otel-operator
@@ -33,11 +33,11 @@ ensuite, puis les operateurs, puis les workloads, enfin les ressources custom.
 | microcks | microcks.io/helm 1.14.0 | Helm |
 | kagent-crds / kagent | ghcr.io/kagent-dev (OCI) 0.9.2 | Helm |
 | preview-operator | ghcr.io/ihsenalaya/charts (OCI prive) 1.0.47 | Helm |
-| external-secrets-config | `gitops/manifests/external-secrets/` | manifests |
+| external-secrets-config | `automatisation/gitops/manifests/external-secrets/` | manifests |
 | observability | `jaeger.yaml` + `otel.yaml` | manifests |
 | github-runner | `runner.yaml` | manifests |
 | kagent-agents | `k8s/kagent/` | manifests |
-| istio-preview-gateway | `gitops/manifests/istio/` | manifests |
+| istio-preview-gateway | `automatisation/gitops/manifests/istio/` | manifests |
 
 Les secrets sont fournis par Azure Key Vault via External Secrets — voir
 [SECRETS.md](SECRETS.md).
@@ -49,7 +49,7 @@ Les secrets sont fournis par Azure Key Vault via External Secrets — voir
 #    Deja provisionne ; pour un cluster neuf voir SECRETS.md.
 
 # 2. Bootstrap : installe Argo CD et l'App-of-Apps.
-./gitops/bootstrap.sh
+./automatisation/gitops/bootstrap.sh
 
 # 3. Acces a l'UI Argo CD
 kubectl -n argocd port-forward svc/argocd-server 8080:443
@@ -73,7 +73,7 @@ argocd app sync -l argocd.argoproj.io/instance=idp-preview-root
 ```
 
 Pour passer un composant en sync automatique apres validation, ajouter dans son
-fichier `gitops/apps/NN-*.yaml` :
+fichier `automatisation/gitops/apps/NN-*.yaml` :
 
 ```yaml
   syncPolicy:
@@ -101,18 +101,18 @@ Le champ `targetRevision` pointe sur la branche `feat/argocd-gitops` pour
 permettre la validation avant merge. Une fois la PR fusionnee, le remplacer
 par `main` dans :
 
-- `gitops/argocd-config/root-app.yaml`
-- `gitops/apps/11-observability.yaml`, `12-github-runner.yaml`,
+- `automatisation/gitops/argocd-config/root-app.yaml`
+- `automatisation/gitops/apps/11-observability.yaml`, `12-github-runner.yaml`,
   `13-kagent-agents.yaml`, `14-istio-gateway.yaml`, `15-external-secrets-config.yaml`
 
 ```bash
-grep -rl 'feat/argocd-gitops' gitops/ | xargs sed -i 's#feat/argocd-gitops#main#'
+grep -rl 'feat/argocd-gitops' automatisation/gitops/ | xargs sed -i 's#feat/argocd-gitops#main#'
 ```
 
 ## Structure
 
 ```
-gitops/
+automatisation/gitops/
 ├── bootstrap.sh                  # installe Argo CD + root-app
 ├── README.md / SECRETS.md
 ├── argocd-config/

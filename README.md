@@ -331,11 +331,12 @@ Then install the operator with `--set previewDomain=preview.<YOUR_ZONE>` (Step 4
 
 ### Step 4 — Install the Preview Operator
 
-> **Tout automatiser avec Argo CD.** Pour une installation GitOps de
-> l'opérateur **et** de toutes ses dépendances (cert-manager, Istio, Microcks,
-> kagent, observabilité, External Secrets…), voir le dossier
-> [`gitops/`](gitops/README.md) : un App-of-Apps Argo CD remplace toutes les
-> étapes manuelles de cette section.
+> **Tout automatiser (Terraform + Argo CD).** Pour provisionner le cluster et
+> installer l'opérateur **et** toutes ses dépendances (cert-manager, Istio,
+> Microcks, kagent, observabilité, External Secrets…), voir le dossier
+> [`automatisation/`](automatisation/README.md) : Terraform crée le cluster, un
+> App-of-Apps Argo CD déploie la plateforme — remplace toutes les étapes
+> manuelles de cette section.
 
 #### AKS / Production — chart Helm OCI publié
 

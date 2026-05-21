@@ -14,7 +14,7 @@ spec:
   source:
     repoURL: https://github.com/ihsenalaya/idp-preview
     targetRevision: feat/argocd-gitops
-    path: gitops/manifests/istio
+    path: automatisation/gitops/manifests/istio
     directory:
       recurse: false
   destination:

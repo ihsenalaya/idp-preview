@@ -3,15 +3,15 @@
 # Bootstrap GitOps — IDP Preview Platform
 # -----------------------------------------------------------------------------
 # Installe Argo CD puis applique l'App-of-Apps racine. A partir de la, Argo CD
-# deploie toute la plateforme (voir gitops/apps/).
+# deploie toute la plateforme (voir automatisation/gitops/apps/).
 #
 # Aucun secret n'est manipule par ce script : les secrets de la plateforme sont
 # tires d'Azure Key Vault par External Secrets Operator (workload identity).
 # Le pre-requis Azure (Key Vault + managed identity + federated credential) est
-# decrit dans gitops/SECRETS.md.
+# decrit dans automatisation/gitops/SECRETS.md.
 #
 # Pre-requis : kubectl pointe sur le bon cluster, droits cluster-admin.
-# Usage : ./gitops/bootstrap.sh
+# Usage : ./automatisation/gitops/bootstrap.sh
 # =============================================================================
 set -euo pipefail
 
@@ -66,4 +66,4 @@ echo "    Acces UI : kubectl -n ${ARGOCD_NAMESPACE} port-forward svc/argocd-serv
 echo "               puis https://localhost:8080  (user: admin)"
 echo ""
 echo "==> Les Applications enfants sont en sync MANUEL. Verifiez le diff dans"
-echo "    l'UI Argo CD avant de synchroniser. Voir gitops/README.md."
+echo "    l'UI Argo CD avant de synchroniser. Voir automatisation/gitops/README.md."

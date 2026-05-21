@@ -20,12 +20,12 @@ la managed identity `idp-eso-identity` et son role `Key Vault Secrets User`.
 
 - Terraform >= 1.5, Azure CLI authentifie (`az login`).
 - La managed identity `idp-eso-identity` doit exister (creee une seule fois —
-  voir `gitops/SECRETS.md`).
+  voir `../gitops/SECRETS.md`).
 
 ## Utilisation
 
 ```bash
-cd terraform
+cd automatisation/terraform
 terraform init
 terraform plan
 terraform apply
