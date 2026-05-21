@@ -50,8 +50,12 @@ spec:
                 secretKeyRef:
                   name: runner-token
                   key: token
+            # Nom unique par pod : evite le conflit "session already exists"
+            # quand plusieurs clusters font tourner un runner sur le meme repo.
             - name: RUNNER_NAME
-              value: aks-runner
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: RUNNER_WORKDIR
               value: /tmp/runner
             - name: LABELS
