@@ -55,7 +55,7 @@ spec:
             - name: RUNNER_WORKDIR
               value: /tmp/runner
             - name: LABELS
-              value: self-hosted,aks
+              value: self-hosted,aks,test1
             - name: EPHEMERAL
               value: "false"
           resources:
