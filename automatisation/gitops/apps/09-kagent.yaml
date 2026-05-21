@@ -15,6 +15,21 @@ spec:
     repoURL: ghcr.io/kagent-dev/kagent/helm
     chart: kagent
     targetRevision: 0.9.2
+    helm:
+      # Le defaut du chart est provider OpenAI ; la plateforme utilise Azure
+      # OpenAI. On bascule le modelconfig par defaut sur AzureOpenAI et on
+      # reutilise le secret kagent-openai deja synchronise par External Secrets.
+      valuesObject:
+        providers:
+          default: azureOpenAI
+          azureOpenAI:
+            model: "gpt-4o-mini"
+            apiKeySecretRef: kagent-openai
+            apiKeySecretKey: OPENAI_API_KEY
+            config:
+              apiVersion: "2024-10-21"
+              azureDeployment: "gpt-4o-mini"
+              azureEndpoint: "https://preview-openai-idp.openai.azure.com"
   destination:
     server: https://kubernetes.default.svc
     namespace: kagent-system
