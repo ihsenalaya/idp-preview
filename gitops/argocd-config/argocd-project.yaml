@@ -13,6 +13,7 @@ spec:
   # Depots autorises comme source des Applications.
   sourceRepos:
     - https://github.com/ihsenalaya/idp-preview        # manifests bruts + apps
+    - https://charts.external-secrets.io               # external-secrets operator
     - https://charts.jetstack.io                       # cert-manager
     - https://kubernetes.github.io/ingress-nginx       # ingress-nginx
     - https://istio-release.storage.googleapis.com/charts   # istio base/istiod/gateway
