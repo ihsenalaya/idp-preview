@@ -37,8 +37,13 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      # RespectIgnoreDifferences : ne PAS reappliquer les champs ignores lors
+      # d'un sync. Indispensable ici — sinon ArgoCD regenere les mots de passe
+      # aleatoires du chart a chaque sync et casse Keycloak (la base PostgreSQL
+      # garde l'ancien mot de passe).
+      - RespectIgnoreDifferences=true
   # Le chart Microcks genere des secrets aleatoires (Keycloak/MongoDB) :
-  # ignorer leur contenu pour eviter une rotation a chaque sync.
+  # ignorer leur contenu pour qu'ils restent stables apres la 1ere creation.
   ignoreDifferences:
     - group: ""
       kind: Secret
