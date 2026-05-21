@@ -1,5 +1,10 @@
 # kagent CRDs — doivent etre installes avant le chart kagent. Wave -2.
 # Chart Helm OCI public (ghcr.io/kagent-dev).
+#
+# Replace=true : les CRDs agents/sandboxagents (~400-500 Ko) depassent la
+# limite d'annotation de l'apply client-side. `kubectl replace` n'ecrit pas
+# l'annotation last-applied-configuration. Sans risque : cette Application ne
+# contient que des CRDs.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,4 +26,4 @@ spec:
   syncPolicy:
     syncOptions:
       - CreateNamespace=true
-      - ServerSideApply=true
+      - Replace=true
