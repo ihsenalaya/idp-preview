@@ -1,0 +1,45 @@
+# Microcks — tests de contrat OpenAPI (runner OPEN_API_SCHEMA). Wave 0.
+#
+# Les URLs nip.io encodent l'IP publique du LoadBalancer ingress-nginx
+# (20.102.24.255). Si cette IP change, mettre a jour les deux valeurs ci-dessous.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: microcks
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://microcks.io/helm
+    chart: microcks
+    targetRevision: 1.14.0
+    helm:
+      valuesObject:
+        microcks:
+          generateCert: false
+          ingressClassName: nginx
+          url: microcks.20.102.24.255.nip.io
+        keycloak:
+          generateCert: false
+          ingressClassName: nginx
+          url: keycloak.20.102.24.255.nip.io
+          privateUrl: http://microcks-keycloak.microcks.svc.cluster.local:8080
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: microcks
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  # Le chart Microcks genere des secrets aleatoires (Keycloak/MongoDB) :
+  # ignorer leur contenu pour eviter une rotation a chaque sync.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      namespace: microcks
+      jsonPointers:
+        - /data

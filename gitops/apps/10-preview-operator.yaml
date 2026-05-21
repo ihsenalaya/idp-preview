@@ -1,0 +1,39 @@
+# Preview Operator — controleur principal (+ preview-extension). Wave 1.
+#
+# Chart Helm OCI PRIVE : ghcr.io/ihsenalaya/charts/preview-operator
+# La credential de depot ArgoCD est generee par External Secrets depuis
+# Key Vault (secret repo-ihsenalaya-charts, namespace argocd) — wave -1,
+# donc disponible avant ce sync (wave 1). Voir gitops/SECRETS.md.
+#
+# Le chart inclut un CRD `previews.platform.company.io` ; ArgoCD l'applique
+# automatiquement (skipCrds=false par defaut).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: preview-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: ghcr.io/ihsenalaya/charts
+    chart: preview-operator
+    targetRevision: 1.0.47
+    helm:
+      valuesObject:
+        image:
+          repository: ghcr.io/ihsenalaya/preview-operator
+          tag: 1.0.47
+        previewDomain: preview.ihsenalaya.xyz
+        ai:
+          apiURL: https://preview-openai-idp.openai.azure.com/openai/deployments/gpt-4o-mini
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: preview-operator-system
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,19 @@
+# Declaration du depot Helm OCI public de kagent pour ArgoCD.
+# Public => aucune credential. Applique par bootstrap.sh.
+#
+# Le depot OCI prive ghcr.io/ihsenalaya/charts (chart preview-operator) n'est
+# PAS declare ici : son secret de repo ArgoCD est genere par External Secrets
+# depuis Azure Key Vault — voir gitops/manifests/external-secrets/.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-kagent-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  name: kagent-oci
+  type: helm
+  url: ghcr.io/kagent-dev/kagent/helm
+  enableOCI: "true"

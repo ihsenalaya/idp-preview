@@ -1,0 +1,28 @@
+# Observability — Jaeger (all-in-one) + OpenTelemetry Collector + Instrumentation.
+# Manifests bruts du repo (jaeger.yaml + otel.yaml). Wave 1.
+# otel.yaml cree un OpenTelemetryCollector : depend de l'otel-operator (wave -1).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    targetRevision: feat/argocd-gitops
+    path: .
+    directory:
+      recurse: false
+      include: '{jaeger.yaml,otel.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

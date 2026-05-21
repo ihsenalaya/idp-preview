@@ -1,0 +1,35 @@
+# Agents kagent specifiques a la plateforme + RBAC read-only + jaeger-mcp-server.
+# Manifests du repo sous k8s/kagent/ (les fichiers *.example.yaml sont exclus).
+# Wave 2 : depend des CRDs kagent et du controleur kagent.
+#
+# Contenu deploye :
+#   k8s/kagent/rbac-readonly.yaml
+#   k8s/kagent/jaeger-mcp-server.yaml          (image GHCR privee -> ghcr-pull-secret)
+#   k8s/kagent/preview-troubleshooter-agent.yaml
+#   k8s/kagent/agents/test-strategist-agent.yaml
+#   k8s/kagent/agents/preview-diff-analyzer.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-agents
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    targetRevision: feat/argocd-gitops
+    path: k8s/kagent
+    directory:
+      recurse: true
+      exclude: '{*.example.yaml,namespace.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-system
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
