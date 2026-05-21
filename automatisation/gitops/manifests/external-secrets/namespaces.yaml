@@ -1,0 +1,24 @@
+# Namespaces des consommateurs de secrets, crees tot pour que les
+# ExternalSecrets puissent y materialiser les Secrets.
+# Prune/Delete desactives : ne jamais supprimer ces namespaces via un sync.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: preview-operator-system
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: github-runner
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false

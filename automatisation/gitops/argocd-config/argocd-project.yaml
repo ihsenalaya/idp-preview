@@ -1,0 +1,36 @@
+# AppProject regroupant toute la plateforme IDP Preview.
+# Restreint les sources Git/Helm autorisees et les destinations du cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: idp-preview
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Plateforme IDP Preview (preview-operator + dependances)
+
+  # Depots autorises comme source des Applications.
+  sourceRepos:
+    - https://github.com/ihsenalaya/idp-preview        # manifests bruts + apps
+    - https://charts.external-secrets.io               # external-secrets operator
+    - https://charts.jetstack.io                       # cert-manager
+    - https://kubernetes.github.io/ingress-nginx       # ingress-nginx
+    - https://istio-release.storage.googleapis.com/charts   # istio base/istiod/gateway
+    - https://open-telemetry.github.io/opentelemetry-helm-charts  # otel-operator
+    - https://microcks.io/helm                         # microcks
+    - ghcr.io/kagent-dev/kagent/helm                   # kagent (OCI)
+    - ghcr.io/ihsenalaya/charts                        # preview-operator (OCI, prive)
+
+  # Toutes les Applications ciblent le cluster local.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: '*'
+
+  # La plateforme installe des CRDs et des ressources cluster-scoped.
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

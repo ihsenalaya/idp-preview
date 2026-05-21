@@ -1,0 +1,11 @@
+# Etat Terraform — ne jamais commiter (peut contenir des donnees sensibles).
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Le fichier de lock .terraform.lock.hcl DOIT etre commite (versions epinglees).

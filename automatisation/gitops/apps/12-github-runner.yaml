@@ -1,0 +1,28 @@
+# GitHub Actions runner self-hosted (Kaniko, pas de Docker-in-Docker).
+# Manifest brut du repo (runner.yaml). Wave 1.
+# Requiert le secret `runner-token` dans le namespace github-runner — voir SECRETS.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: github-runner
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    targetRevision: main
+    path: .
+    directory:
+      recurse: false
+      include: runner.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: github-runner
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

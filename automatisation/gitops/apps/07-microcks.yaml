@@ -1,0 +1,52 @@
+# Microcks — tests de contrat OpenAPI (runner OPEN_API_SCHEMA). Wave 0.
+#
+# ingresses=false : aucune Ingress n'est creee. L'operateur appelle Microcks
+# via le service in-cluster (microcks.microcks.svc.cluster.local:8080) — le
+# README precise qu'aucune ingress n'est requise pour cet usage. Cela rend la
+# config portable (pas d'IP de LoadBalancer figee, valable sur tout cluster).
+# Acces a l'UI Microcks : `kubectl -n microcks port-forward svc/microcks 8080`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: microcks
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://microcks.io/helm
+    chart: microcks
+    targetRevision: 1.14.0
+    helm:
+      valuesObject:
+        ingresses: false
+        microcks:
+          generateCert: false
+          url: microcks.microcks.svc.cluster.local
+        keycloak:
+          generateCert: false
+          url: microcks-keycloak.microcks.svc.cluster.local
+          privateUrl: http://microcks-keycloak.microcks.svc.cluster.local:8080
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: microcks
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      # RespectIgnoreDifferences : ne PAS reappliquer les champs ignores lors
+      # d'un sync. Indispensable ici — sinon ArgoCD regenere les mots de passe
+      # aleatoires du chart a chaque sync et casse Keycloak (la base PostgreSQL
+      # garde l'ancien mot de passe).
+      - RespectIgnoreDifferences=true
+  # Le chart Microcks genere des secrets aleatoires (Keycloak/MongoDB) :
+  # ignorer leur contenu pour qu'ils restent stables apres la 1ere creation.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      namespace: microcks
+      jsonPointers:
+        - /data

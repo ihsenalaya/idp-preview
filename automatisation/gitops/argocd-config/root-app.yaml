@@ -1,0 +1,32 @@
+# App-of-Apps : Application racine qui deploie toutes les Applications
+# enfants decrites dans automatisation/gitops/apps/.
+#
+# Le root-app est en sync automatique : il ne fait que creer/mettre a jour
+# les objets Application (aucun impact sur les workloads). Chaque Application
+# enfant est en sync MANUEL par defaut — voir automatisation/gitops/README.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: idp-preview-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    # Avant merge : pointer sur la branche de la PR pour valider dans l'UI ArgoCD.
+    # Apres merge : remplacer par `main`.
+    targetRevision: main
+    path: automatisation/gitops/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true        # supprime une Application enfant retiree du repo
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

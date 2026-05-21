@@ -1,0 +1,36 @@
+# Istio ingress gateway — Service LoadBalancer expose les previews
+# *.preview.ihsenalaya.xyz. Wave 0.
+#
+# Le nom de release `istio-ingressgateway` donne au pod le label
+# `istio: ingressgateway`, requis par le selector du Gateway preview-gateway.
+# Voir la note d'adoption dans 03-istio-base.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-ingressgateway
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: gateway
+    targetRevision: 1.23.0
+    helm:
+      valuesObject:
+        service:
+          type: LoadBalancer
+        autoscaling:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 5
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
