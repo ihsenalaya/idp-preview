@@ -1,8 +1,24 @@
 name: Preview Environment
 
+# Triggered by:
+#  - pull_request: standard flow (PR number from event)
+#  - push to demo1: branch testing (synthetic PR number from run_number)
+#  - workflow_dispatch: manual run on any branch
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: ["demo*", "demo-*"]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to deploy as a preview
+        required: false
+        default: demo1
+      pr_number:
+        description: Synthetic PR number (used in preview name and namespace)
+        required: false
+        default: "9999"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -24,6 +40,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve preview context (PR / push / manual)
+        id: ctx
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+              echo "branch=${{ github.head_ref }}" >> "$GITHUB_OUTPUT"
+              echo "base_sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+              echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+              ;;
+            push)
+              # push to demo1 — synthesize PR number from run_number for uniqueness
+              echo "pr_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+              echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+              BASE=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD~1)
+              echo "base_sha=$BASE" >> "$GITHUB_OUTPUT"
+              echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              echo "pr_number=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+              echo "branch=${{ github.event.inputs.branch }}" >> "$GITHUB_OUTPUT"
+              BASE=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD~1)
+              echo "base_sha=$BASE" >> "$GITHUB_OUTPUT"
+              echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Install kubectl
         run: |
@@ -66,7 +112,7 @@ jobs:
                     image: gcr.io/kaniko-project/executor:latest
                     args:
                       - --context=git://github.com/${{ github.repository }}
-                      - --git=branch=${{ github.head_ref }}
+                      - --git=branch=${{ steps.ctx.outputs.branch }}
                       - --destination=${IMAGE}
                       - --snapshot-mode=redo
                       - --compressed-caching=false
@@ -100,8 +146,8 @@ jobs:
             const deployment = await github.rest.repos.createDeployment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: context.payload.pull_request.head.sha,
-              environment: `pr-${{ github.event.pull_request.number }}`,
+              ref: "${{ steps.ctx.outputs.head_sha }}",
+              environment: `pr-${{ steps.ctx.outputs.pr_number }}`,
               auto_merge: false,
               required_contexts: [],
               description: "Preview environment"
@@ -122,18 +168,15 @@ jobs:
 
       - name: Apply Preview manifest
         run: |
-          # Fetch full history so git diff can compare base and head.
           git fetch --unshallow 2>/dev/null || true
-          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || true
+          git fetch origin main --depth=1 2>/dev/null || true
 
-          # Generate the complete Preview CR manifest (including changeContext +
-          # testStrategy) and pipe directly to kubectl — no heredoc, no escaping issues.
           python3 scripts/generate_preview_manifest.py \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --branch "${{ github.head_ref }}" \
+            --pr-number "${{ steps.ctx.outputs.pr_number }}" \
+            --branch "${{ steps.ctx.outputs.branch }}" \
             --image "${IMAGE}" \
-            --base-sha "${{ github.event.pull_request.base.sha }}" \
-            --head-sha "${{ github.sha }}" \
+            --base-sha "${{ steps.ctx.outputs.base_sha }}" \
+            --head-sha "${{ steps.ctx.outputs.head_sha }}" \
             --repo "${{ github.repository }}" \
             --repo-owner "${{ github.repository_owner }}" \
             --repo-name "${{ github.event.repository.name }}" \
@@ -144,26 +187,24 @@ jobs:
 
       - name: Wait for Preview to be ready
         run: |
+          PREV="pr-${{ steps.ctx.outputs.pr_number }}"
           for i in $(seq 1 30); do
-            PHASE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
-              -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            URL=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
-              -o jsonpath='{.status.url}' 2>/dev/null || echo "")
-            GITHUB_STATE=$(kubectl get preview pr-${{ github.event.pull_request.number }} \
-              -o jsonpath='{.status.github.deploymentState}' 2>/dev/null || echo "")
+            PHASE=$(kubectl get preview "$PREV" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            URL=$(kubectl get preview "$PREV" -o jsonpath='{.status.url}' 2>/dev/null || echo "")
+            GITHUB_STATE=$(kubectl get preview "$PREV" -o jsonpath='{.status.github.deploymentState}' 2>/dev/null || echo "")
             echo "Phase: ${PHASE} URL: ${URL} GitHub: ${GITHUB_STATE}"
             if [ "$PHASE" = "Running" ] && [ "$GITHUB_STATE" = "success" ]; then
               echo "Preview ready: ${URL}"
               exit 0
             fi
             if [ "$PHASE" = "Failed" ]; then
-              kubectl describe preview pr-${{ github.event.pull_request.number }}
+              kubectl describe preview "$PREV"
               exit 1
             fi
             sleep 10
           done
 
-          kubectl describe preview pr-${{ github.event.pull_request.number }} || true
+          kubectl describe preview "$PREV" || true
           exit 1
 
       - name: Cleanup Kaniko secret

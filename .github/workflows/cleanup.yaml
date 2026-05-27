@@ -3,10 +3,16 @@ name: Cleanup Preview Environment
 on:
   pull_request:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR / preview number to delete (e.g. 9999 for a demo run)
+        required: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  GITHUB_TOKEN_SECRET: github-token-pr-${{ github.event.pull_request.number }}
+  PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  GITHUB_TOKEN_SECRET: github-token-pr-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 
 jobs:
   cleanup:
@@ -37,25 +43,26 @@ jobs:
 
       - name: Delete Preview
         run: |
-          kubectl delete preview pr-${{ github.event.pull_request.number }} \
+          kubectl delete preview pr-${{ env.PR_NUMBER }} \
             --ignore-not-found
 
           for i in $(seq 1 30); do
-            if ! kubectl get preview pr-${{ github.event.pull_request.number }} >/dev/null 2>&1; then
+            if ! kubectl get preview pr-${{ env.PR_NUMBER }} >/dev/null 2>&1; then
               echo "Preview deleted"
               exit 0
             fi
             sleep 5
           done
 
-          kubectl describe preview pr-${{ github.event.pull_request.number }} || true
+          kubectl describe preview pr-${{ env.PR_NUMBER }} || true
           exit 1
 
       - name: Comment PR — environment deleted
+        if: github.event_name == 'pull_request'
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
-            --body "Preview environment **pr-${{ github.event.pull_request.number }}** supprimé."
+            --body "Preview environment **pr-${{ env.PR_NUMBER }}** supprimé."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
