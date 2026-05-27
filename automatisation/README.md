@@ -35,6 +35,13 @@ gérées par ce Terraform (créées une seule fois — voir `gitops/SECRETS.md`)
 | Resource group | `idp-preview-rg` | Conteneur de toutes les ressources |
 | Key Vault | `idp-preview-kv` | Secrets `github-pat`, `azure-openai-key` |
 | Managed identity | `idp-eso-identity` | Identité d'External Secrets (rôle `Key Vault Secrets User`) |
+| Azure OpenAI | `preview-openai-idp` | Endpoint `gpt-4o-mini` consommé par l'opérateur + kagent |
+
+> ⚠️ **Si la ressource Azure OpenAI a déjà été supprimée puis restaurée**
+> (`az cognitiveservices account recover`), son DNS public peut être
+> NXDOMAIN même quand Azure dit `Succeeded`. Symptôme : AI enrichment +
+> kagent Failed avec `dial tcp: lookup ... no such host`. Fix : purger puis
+> recréer la ressource — voir [TROUBLESHOOTING §1](TROUBLESHOOTING.md#1-azure-openai-restauré-dun-soft-delete--dns-nxdomain).
 
 ---
 
@@ -252,3 +259,4 @@ Les ressources partagées (RG, Key Vault, identité) restent intactes.
 - [`terraform/README.md`](terraform/README.md) — détail du provisioning
 - [`gitops/README.md`](gitops/README.md) — détail de la couche Argo CD
 - [`gitops/SECRETS.md`](gitops/SECRETS.md) — Key Vault, ESO, Workload Identity
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — **pièges rencontrés** (DNS Azure OpenAI après soft-delete, kagent Failed, MSA guest + RBAC, kubeconfig WSL, sizing cluster, Argo CD timeouts) — **à lire avant tout nouveau provisioning**

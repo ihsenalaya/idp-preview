@@ -50,35 +50,60 @@ az role assignment create --role "Key Vault Secrets Officer" \
   --assignee-principal-type User \
   --scope "$(az keyvault show --name "$KV" --query id -o tsv)"
 
-# 2. Chargement des secrets
-az keyvault secret set --vault-name "$KV" --name github-pat       --value "<PAT_GITHUB>"
-az keyvault secret set --vault-name "$KV" --name azure-openai-key --value "<CLE_AZURE_OPENAI>"
+# 2. Provisionner Azure OpenAI + déployer gpt-4o-mini
+# NB : ne jamais utiliser `az cognitiveservices account recover` sur une ressource
+# soft-deleted — le DNS public ne se re-publie pas. Toujours purger + recréer.
+# Voir TROUBLESHOOTING §1.
+OPENAI_NAME=preview-openai-idp
+az cognitiveservices account create -n "$OPENAI_NAME" -g "$RG" -l "$LOCATION" \
+  --kind OpenAI --sku S0 --custom-domain "$OPENAI_NAME" --yes
+az cognitiveservices account deployment create \
+  -n "$OPENAI_NAME" -g "$RG" --deployment-name gpt-4o-mini \
+  --model-name gpt-4o-mini --model-version "2024-07-18" --model-format OpenAI \
+  --sku-name "GlobalStandard" --sku-capacity 30
 
-# 3. OIDC issuer + workload identity sur l'AKS
+# Vérifier que le DNS public a propagé (sinon attendre 1 min)
+until nslookup "$OPENAI_NAME.openai.azure.com" 8.8.8.8 >/dev/null 2>&1; do
+  echo "waiting for DNS propagation..."; sleep 10
+done
+
+AOAI_KEY=$(az cognitiveservices account keys list -n "$OPENAI_NAME" -g "$RG" --query key1 -o tsv | tr -d '\r\n')
+
+# 3. Chargement des secrets dans Key Vault
+az keyvault secret set --vault-name "$KV" --name github-pat       --value "<PAT_GITHUB>"
+az keyvault secret set --vault-name "$KV" --name azure-openai-key --value "$AOAI_KEY"
+
+# 4. OIDC issuer + workload identity sur l'AKS
 az aks update --resource-group "$RG" --name "$CLUSTER" \
   --enable-oidc-issuer --enable-workload-identity
 OIDC_URL=$(az aks show -g "$RG" -n "$CLUSTER" --query oidcIssuerProfile.issuerUrl -o tsv)
 
-# 4. Managed identity pour ESO
+# 5. Managed identity pour ESO
 az identity create --name idp-eso-identity --resource-group "$RG" --location "$LOCATION"
 ESO_CLIENT_ID=$(az identity show -n idp-eso-identity -g "$RG" --query clientId -o tsv)
 ESO_PRINCIPAL=$(az identity show -n idp-eso-identity -g "$RG" --query principalId -o tsv)
 
-# 5. Role sur le vault
+# 6. Role sur le vault
 az role assignment create --role "Key Vault Secrets User" \
   --assignee-object-id "$ESO_PRINCIPAL" --assignee-principal-type ServicePrincipal \
   --scope "$(az keyvault show --name "$KV" --query id -o tsv)"
 
-# 6. Federated credential : identite <-> ServiceAccount du controleur ESO
+# 7. Federated credential : identite <-> ServiceAccount du controleur ESO
 az identity federated-credential create --name eso-external-secrets \
   --identity-name idp-eso-identity --resource-group "$RG" \
   --issuer "$OIDC_URL" \
   --subject "system:serviceaccount:external-secrets:external-secrets" \
   --audiences "api://AzureADTokenExchange"
 
-# 7. Reporter $ESO_CLIENT_ID dans automatisation/gitops/apps/00-external-secrets.yaml
+# 8. Reporter $ESO_CLIENT_ID dans automatisation/gitops/apps/00-external-secrets.yaml
 #    (serviceAccount.annotations."azure.workload.identity/client-id")
 ```
+
+> **MSA invité dans le tenant** : si ton compte signé est un Microsoft
+> Account (`@outlook.com` invité avec `#EXT#` dans l'UPN), `az role
+> assignment create` échoue avec "Bad Request" ou "Cannot find user in
+> graph database". Passer par l'API REST ou par le Portail Azure — voir
+> [`../TROUBLESHOOTING.md` §3](../TROUBLESHOOTING.md#3-compte-msa-invité-ne-peut-pas-sattribuer-un-rôle-rbac-sur-le-key-vault).
 
 ## Rotation d'un secret
 
