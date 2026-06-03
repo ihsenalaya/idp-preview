@@ -29,7 +29,7 @@ Le principe : **kind crée le cluster**, **un script crée les secrets**,
 | Exposition previews | Istio Gateway + LoadBalancer | **ingress-nginx + nip.io** |
 | Service mesh | Istio | *(retiré)* |
 | Images | GHCR `ghcr.io/ihsenalaya/...` | opérateur **public** (tiré directement) ; **serveurs MCP privés → buildés localement** (`build-mcp-images.sh`, auto via `up.sh`) |
-| Composants | 16 | 10 (Istio ×4 et External-Secrets ×2 retirés) |
+| Composants | 16 | 11 (Istio ×4 et External-Secrets ×2 retirés ; preview-extension déployé à part) |
 
 **Comment l'IA bascule sur GitHub Models — sans modifier le code :**
 
@@ -129,8 +129,13 @@ Ensuite Argo CD déploie tout, **wave par wave** :
 | **-2** | cert-manager · ingress-nginx · kagent-crds |
 | **-1** | opentelemetry-operator |
 | **0**  | microcks · kagent |
-| **1**  | **preview-operator** · observability · github-runner |
+| **1**  | **preview-operator** · **preview-extension** (API checkpoint) · observability · github-runner |
 | **2**  | kagent-agents |
+
+> **preview-extension** déploie le service `preview-extension:8090` (API de
+> checkpoint DB) depuis les manifestes `config/extension/` du repo public
+> `preview-operator` — il n'est pas dans le chart public, mais les tests e2e en
+> ont besoin (`db-reset`/restore du seed). Image publique `…/preview-extension:1.0.48`.
 
 ---
 

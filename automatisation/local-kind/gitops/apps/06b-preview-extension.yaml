@@ -1,0 +1,40 @@
+# Preview Extension — checkpoint API sidecar. Wave 1.
+#
+# L'extension (Service `preview-extension:8090` dans preview-operator-system)
+# expose l'API de checkpoint DB qu'utilisent les tests e2e (`db-reset` /
+# restore "after-seed"). En prod elle est embarquée dans le chart PRIVÉ
+# `ghcr.io/ihsenalaya/charts/preview-operator` ; le chart PUBLIC utilisé en
+# local-kind ne l'inclut pas. On la déploie donc depuis les manifestes autonomes
+# du repo public `preview-operator` (config/extension/).
+#
+# Image PUBLIQUE : ghcr.io/ihsenalaya/preview-extension:1.0.48 (tirée directement).
+# Sans cette App, les tests e2e échouent : `Failed to resolve
+# preview-extension.preview-operator-system.svc.cluster.local` -> pas de restore
+# du seed -> UI vide -> timeouts Playwright.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: preview-extension
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/preview-operator
+    targetRevision: main
+    path: config/extension
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: preview-operator-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
