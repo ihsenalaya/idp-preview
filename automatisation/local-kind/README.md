@@ -275,9 +275,15 @@ kubectl logs -n preview-operator-system deploy/preview-operator-controller-manag
   ; l'étape CI « Wait for ready » le voit et rend le run rouge alors que l'env est
   sain. Côté **code opérateur** (`preview_controller.go`, `setFailedStatus`),
   partiellement adressé en 1.1.0 (requeue au lieu de Failed sur conflit DB).
-- **github-runner** : enregistré comme runner self-hosted ; ses jobs CI build/push
-  vers GHCR supposent un accès GitHub réel. Pour tester l'opérateur isolément,
-  crée des `Preview` à la main (§5) ou via `workflow_dispatch`.
+- **github-runner** : runners self-hosted **persistants** (`EPHEMERAL=false`),
+  déployés en **2 replicas** (`runner.yaml`) pour la **redondance**. Avec un seul
+  runner, s'il redémarre/perd sa connexion (ex. sous contention pendant la
+  convergence) il peut rester `online` côté GitHub mais ne plus accepter de job →
+  tout run déclenché pendant ce trou reste bloqué en `queued`. Deux replicas
+  garantissent qu'un runner sain prend le job. (Récupération manuelle si besoin :
+  `kubectl rollout restart deploy/github-runner -n github-runner`.) Ses jobs CI
+  build/push vers GHCR supposent un accès GitHub réel ; pour tester l'opérateur
+  seul, crée des `Preview` à la main (§5) ou via `workflow_dispatch`.
 - **Ressources** : la pile complète (cert-manager, ingress, otel, microcks +
   Keycloak, kagent, opérateur, extension, jaeger, runner) demande un Docker
   généreux — prévoir **~10 Go de RAM et 4 vCPU** minimum alloués à Docker.

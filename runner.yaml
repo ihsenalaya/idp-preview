@@ -29,7 +29,13 @@ metadata:
   name: github-runner
   namespace: github-runner
 spec:
-  replicas: 1
+  # 2 replicas (runners PERSISTANTS, EPHEMERAL=false) pour la redondance : si un
+  # runner redemarre/perd sa connexion (ex. sous contention pendant la convergence
+  # du cluster), l'autre reste enregistre et prend le job en file immediatement.
+  # Avec un seul runner, un restart laisse un etat "online mais inactif" et tout
+  # job declenche pendant ce trou reste bloque en `queued`. Chaque pod a un
+  # RUNNER_NAME unique (= nom du pod), donc pas de conflit d'enregistrement.
+  replicas: 2
   selector:
     matchLabels:
       app: github-runner
