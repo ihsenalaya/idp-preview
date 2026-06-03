@@ -37,12 +37,18 @@ prod, intacte).
 - **kagent** : déployé mais sa pile **complète** (postgresql, grafana-mcp,
   querydoc, kmcp, tools, controller) **+ la preview** → **OOM sur 7 GiB**
   (control-plane tué 2×). Voir §4.
-- **Images MCP privées** : `ghcr.io/ihsenalaya/github-mcp-server:latest` et
-  `jaeger-mcp-server:latest` sont **PRIVÉES** → `403` au pull. Le token n'a pas
-  `read:packages`. **Workaround validé** : builder en local depuis
-  `idp-preview/github-mcp/` et `idp-preview/jaeger-mcp/`, `kind load`, puis
-  patcher le déploiement (image locale + `imagePullPolicy: IfNotPresent`, retirer
-  `imagePullSecrets`). L'image `local/github-mcp-server:dev` a déjà été buildée+chargée.
+- **Images MCP** :
+  - ✅ **`ghcr.io/ihsenalaya/github-mcp-server:latest` POUSSÉE sur GHCR**
+    (digest `sha256:aba7c048...`). Vérifier sa **visibilité** : si elle est
+    privée, soit la passer **public** (UI GitHub → Packages → github-mcp-server →
+    Package settings → Change visibility → Public), soit fournir un
+    `read:packages` au cluster. Une fois public → pull direct, rien à faire.
+  - ✅ **`ghcr.io/ihsenalaya/jaeger-mcp-server:latest` POUSSÉE sur GHCR**
+    (digest `sha256:d6d56d13...`). Même remarque de visibilité que ci-dessus.
+  - **Fallback sans GHCR** (le plus simple) : `scripts/build-mcp-images.sh`
+    builde les 2 images depuis `idp-preview/github-mcp` + `idp-preview/jaeger-mcp`,
+    les charge dans kind et patche les déploiements (IfNotPresent, sans pull
+    secret). Aucun token `packages` requis.
 - **Microcks** non déployé (lean) → contract tests KO. À ajouter sur machine ≥16 Go.
 - **test-strategist** (kagent) : non confirmé (fallback a pris le relais).
 - **diff-analyzer** (kagent) : non confirmé (dépend de github-mcp-server).
