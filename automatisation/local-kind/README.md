@@ -28,7 +28,7 @@ Le principe : **kind crée le cluster**, **un script crée les secrets**,
 | Secrets | Azure Key Vault + External Secrets | **Script + `.env`** (Secrets natifs) |
 | Exposition previews | Istio Gateway + LoadBalancer | **ingress-nginx + nip.io** |
 | Service mesh | Istio | *(retiré)* |
-| Images | GHCR `ghcr.io/ihsenalaya/...` (publiques) | **identiques — tirées directement** (pas de build) |
+| Images | GHCR `ghcr.io/ihsenalaya/...` | opérateur **public** (tiré directement) ; **serveurs MCP privés → buildés localement** (`build-mcp-images.sh`, auto via `up.sh`) |
 | Composants | 16 | 10 (Istio ×4 et External-Secrets ×2 retirés) |
 
 **Comment l'IA bascule sur GitHub Models — sans modifier le code :**
@@ -53,10 +53,14 @@ Le principe : **kind crée le cluster**, **un script crée les secrets**,
 | kubectl | interaction cluster |
 | helm | inspection/templating des charts (utilisé par Argo CD côté serveur) |
 
-> **Aucun build d'image.** Les images `ghcr.io/ihsenalaya/preview-operator`,
-> `github-mcp-server` et `jaeger-mcp-server` sont **publiques** sur GHCR et
-> tirées directement par Kubernetes. Le chart de l'opérateur est lui aussi
-> public (dépôt Git `preview-operator`).
+> **Images.** L'image de l'opérateur `ghcr.io/ihsenalaya/preview-operator` (et son
+> chart) sont **publiques** sur GHCR → tirées directement par Kubernetes, rien à
+> faire. En revanche les **deux serveurs MCP** (`github-mcp-server`,
+> `jaeger-mcp-server`) sont **privés** : `up.sh` les **builde depuis les sources**
+> du repo (`github-mcp/`, `jaeger-mcp/`) et les charge dans kind — voir
+> [§4bis](#4bis-images-mcp-build-local-automatique). Tu n'as donc besoin d'aucun
+> accès au GHCR privé ni d'un PAT `read:packages`. **Docker est requis** (pour ce
+> build).
 
 ### Le token GitHub Models
 
@@ -114,8 +118,9 @@ cp .env.example .env        # puis renseigne GITHUB_TOKEN / GITHUB_MODELS_TOKEN
 | Étape | Script | Action |
 |-------|--------|--------|
 | 1 | `01-create-cluster.sh` | crée le cluster kind `idp-preview-local` |
-| 2 | `02-secrets.sh` | crée namespaces + Secrets depuis `.env` |
-| 3 | `03-bootstrap-argocd.sh` | installe Argo CD + l'App-of-Apps racine |
+| 2 | `build-mcp-images.sh` | **builde les images MCP depuis les sources et les charge dans kind** (voir §4bis) |
+| 3 | `02-secrets.sh` | crée namespaces + Secrets depuis `.env` |
+| 4 | `03-bootstrap-argocd.sh` | installe Argo CD + l'App-of-Apps racine |
 
 Ensuite Argo CD déploie tout, **wave par wave** :
 
@@ -126,6 +131,43 @@ Ensuite Argo CD déploie tout, **wave par wave** :
 | **0**  | microcks · kagent |
 | **1**  | **preview-operator** · observability · github-runner |
 | **2**  | kagent-agents |
+
+---
+
+## 4bis. Images MCP (build local, automatique)
+
+Deux serveurs MCP de la plateforme — **`github-mcp-server`** (outils PR) et
+**`jaeger-mcp-server`** (outils traces) — sont publiés en **privé** sur GHCR. Sur
+un clone public, Kubernetes ne peut pas les tirer (`403 Forbidden`). On ne dépend
+donc pas du registre : on **builde les images depuis les sources** et on les
+**charge dans kind**.
+
+C'est **automatique** : `up.sh` appelle `scripts/build-mcp-images.sh` juste après
+la création du cluster. Pour le lancer (ou le relancer) à la main :
+
+```bash
+./scripts/build-mcp-images.sh
+# si le cluster tourne déjà, recharge les pods :
+kubectl rollout restart deploy/github-mcp-server deploy/jaeger-mcp-server -n kagent-system
+```
+
+Le script :
+
+| Étape | Détail |
+|-------|--------|
+| build | `docker build` de `github-mcp/` → `ghcr.io/ihsenalaya/github-mcp-server:latest` et de `jaeger-mcp/` → `…/jaeger-mcp-server:latest` (mêmes tags que les manifests) |
+| load  | `kind load docker-image …` dans le cluster `idp-preview-local` |
+| run   | les Deployments `k8s/kagent/{github,jaeger}-mcp-server.yaml` ont `imagePullPolicy: IfNotPresent` → kube utilise l'image chargée, **aucun pull GHCR, aucun PAT, aucun `ghcr-pull-secret`** |
+
+**Sources des serveurs MCP** (à la racine du repo) : chacun est un petit serveur
+Python (`server.py` + `requirements.txt` + `Dockerfile` `python:3.12-slim`).
+Modifie un `server.py`, relance `build-mcp-images.sh` puis le `rollout restart`.
+
+> Vérifier après déploiement :
+> ```bash
+> kubectl get remotemcpserver -n kagent-system   # ACCEPTED=True attendu
+> kubectl get pods -n kagent-system -l 'app in (github-mcp-server,jaeger-mcp-server)'
+> ```
 
 Suivre l'avancement :
 

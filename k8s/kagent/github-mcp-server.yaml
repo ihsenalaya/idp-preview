@@ -29,7 +29,12 @@ spec:
       containers:
         - name: github-mcp-server
           image: ghcr.io/ihsenalaya/github-mcp-server:latest
-          imagePullPolicy: Always
+          # IfNotPresent: on kind the image is built from source and `kind load`ed
+          # (automatisation/local-kind/scripts/build-mcp-images.sh, run by up.sh),
+          # so no GHCR pull is attempted. On AKS the image is absent locally and is
+          # pulled via imagePullSecrets. Works for both — and lets the repo be public
+          # without exposing the private MCP images.
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8812
               protocol: TCP

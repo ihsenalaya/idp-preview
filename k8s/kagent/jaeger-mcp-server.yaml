@@ -23,6 +23,10 @@ spec:
       containers:
         - name: jaeger-mcp-server
           image: ghcr.io/ihsenalaya/jaeger-mcp-server:latest
+          # IfNotPresent: on kind the image is built from source and `kind load`ed
+          # (automatisation/local-kind/scripts/build-mcp-images.sh, run by up.sh),
+          # so no GHCR pull is attempted. On AKS it is pulled via imagePullSecrets.
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8811
           env:

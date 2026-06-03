@@ -14,6 +14,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 bash "${SCRIPT_DIR}/01-create-cluster.sh"
+# Build the PRIVATE custom MCP images from source and load them into kind, so the
+# install works on a public clone without access to the private GHCR images
+# (the Deployments use imagePullPolicy: IfNotPresent — no pull is attempted).
+bash "${SCRIPT_DIR}/build-mcp-images.sh"
 bash "${SCRIPT_DIR}/02-secrets.sh"
 bash "${SCRIPT_DIR}/03-bootstrap-argocd.sh"
 
