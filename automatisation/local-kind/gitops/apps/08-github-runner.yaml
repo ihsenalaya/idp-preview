@@ -1,0 +1,35 @@
+# GitHub Actions runner self-hosted (in-cluster). Wave 1.
+# Manifest brut du repo (runner.yaml). Requiert le secret `runner-token` dans
+# le namespace github-runner (cree par 03-secrets.sh depuis GITHUB_TOKEN).
+#
+# NB local : le runner s'enregistre bien, mais ses jobs CI (build/push d'images
+# vers GHCR) supposent un acces GitHub/GHCR reel. Pour tester l'operateur seul,
+# on peut creer des Preview CR a la main (voir README.md).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: github-runner
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    targetRevision: local-kind
+    path: .
+    directory:
+      recurse: false
+      include: runner.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: github-runner
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

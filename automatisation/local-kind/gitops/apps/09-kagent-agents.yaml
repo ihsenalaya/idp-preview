@@ -1,0 +1,37 @@
+# Agents kagent de la plateforme + RBAC read-only + serveurs MCP. Wave 2.
+#
+# Manifests upstream du repo (k8s/kagent/), identiques a la prod. Les images
+# des serveurs MCP (ghcr.io/ihsenalaya/github-mcp-server, jaeger-mcp-server)
+# sont PUBLIQUES => tirees directement par Kubernetes. Le secret ghcr-pull-secret
+# (cree par 02-secrets.sh) couvre la reference des manifests upstream.
+#
+# Les agents referencent le ModelConfig `default-model-config` (GitHub Models)
+# genere par le chart kagent (voir 05-kagent.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-agents
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/idp-preview
+    targetRevision: local-kind
+    path: k8s/kagent
+    directory:
+      recurse: true
+      exclude: '{*.example.yaml,namespace.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

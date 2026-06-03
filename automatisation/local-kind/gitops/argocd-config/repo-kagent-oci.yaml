@@ -1,0 +1,14 @@
+# Depot Helm OCI public de kagent pour ArgoCD. Public => aucune credential.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-kagent-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  name: kagent-oci
+  type: helm
+  url: ghcr.io/kagent-dev/kagent/helm
+  enableOCI: "true"

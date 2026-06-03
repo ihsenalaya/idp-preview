@@ -1,0 +1,52 @@
+# Preview Operator — controleur principal. Wave 1.
+#
+# Source : le chart Helm est tire directement du depot Git PUBLIC
+# preview-operator (charts/preview-operator). L'image
+# ghcr.io/ihsenalaya/preview-operator:1.1.0 est PUBLIQUE sur GHCR : tiree
+# directement par Kubernetes (pullPolicy IfNotPresent).
+#
+# === GitHub Models (gratuit) ===
+# ai.apiURL pointe sur https://models.github.ai/inference. Le client AI de
+# l'operateur detecte "pas azure.com" -> auth `Authorization: Bearer` (style
+# OpenAI), ce qui est exactement ce qu'attend GitHub Models. La cle est lue
+# dans le secret ai-api-key (cle api-key), cree par 03-secrets.sh.
+#
+# === Exposition ===
+# Istio n'est pas installe -> l'operateur auto-detecte l'absence de la CRD
+# VirtualService et expose chaque preview via un Ingress nginx :
+#   http://pr-<N>.preview.127.0.0.1.nip.io
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: preview-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://github.com/ihsenalaya/preview-operator
+    targetRevision: main
+    path: charts/preview-operator
+    helm:
+      valuesObject:
+        image:
+          repository: ghcr.io/ihsenalaya/preview-operator
+          tag: "1.1.0"
+          pullPolicy: IfNotPresent
+        previewDomain: preview.127.0.0.1.nip.io
+        leaderElect: false
+        ai:
+          apiURL: https://models.github.ai/inference
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: preview-operator-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

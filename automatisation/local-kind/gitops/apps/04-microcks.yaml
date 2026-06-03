@@ -1,0 +1,41 @@
+# Microcks — mocking & tests de contrat d'API. Wave 0.
+#
+# Config locale minimale : Keycloak desactive (pas d'auth en local) et UI
+# exposee via ingress-nginx sur microcks.127.0.0.1.nip.io. Ajuster au besoin.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: microcks
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: https://microcks.io/helm
+    chart: microcks
+    targetRevision: 1.14.0
+    helm:
+      valuesObject:
+        microcks:
+          url: microcks.127.0.0.1.nip.io
+          ingress:
+            enabled: true
+            className: nginx
+        keycloak:
+          enabled: false
+        features:
+          async:
+            enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: microcks
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

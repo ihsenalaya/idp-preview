@@ -1,0 +1,28 @@
+# =============================================================================
+# Cluster kind local — IDP Preview Platform (variante locale GitHub Models).
+#
+# 1 control-plane (porte l'ingress-nginx) + 2 workers (charges applicatives).
+# Le control-plane est labelise `ingress-ready=true` et expose les ports 80/443
+# de l'hote : les previews http://pr-<N>.preview.127.0.0.1.nip.io tapent
+# directement sur l'ingress-nginx du cluster, sans LoadBalancer.
+# =============================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: idp-preview-local
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+  - role: worker
+  - role: worker

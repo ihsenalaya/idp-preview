@@ -1,0 +1,2 @@
+# Ne jamais committer les secrets locaux.
+.env

@@ -1,0 +1,41 @@
+# Exemple de Preview pour tester la plateforme locale SANS passer par le runner CI.
+#
+#   kubectl apply -f automatisation/local-kind/examples/preview-sample.yaml
+#
+# L'operateur cree un namespace dedie, deploie l'app + (option) PostgreSQL,
+# et expose la preview via un Ingress nginx :
+#   http://pr-42.preview.127.0.0.1.nip.io
+#
+# aiEnrichment active => l'operateur appelle GitHub Models (secret ai-api-key)
+# pour generer seed SQL + script de tests. model = openai/gpt-4o-mini
+# (prefixe editeur requis par l'endpoint models.github.ai).
+apiVersion: platform.company.io/v1alpha1
+kind: Preview
+metadata:
+  name: preview-sample
+  namespace: preview-operator-system
+spec:
+  branch: feature/demo-local
+  prNumber: 42
+  image: nginx:latest
+  ttl: 24h
+  resourceTier: small
+  replicas: 1
+  aiEnrichment:
+    enabled: true
+    model: openai/gpt-4o-mini
+    apiSecretRef:
+      name: ai-api-key
+      namespace: preview-operator-system
+      key: api-key
+  # Mettre enabled: true pour publier un commentaire sur une vraie PR GitHub.
+  github:
+    enabled: false
+    owner: ihsenalaya
+    repo: idp-preview
+    environment: pr-42
+    commentOnReady: true
+    tokenSecretRef:
+      name: preview-github-token
+      namespace: preview-operator-system
+      key: token

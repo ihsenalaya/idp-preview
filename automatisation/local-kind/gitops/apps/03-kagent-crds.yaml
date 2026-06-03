@@ -1,0 +1,27 @@
+# kagent CRDs — installees avant le controleur kagent. Wave -2.
+# Chart Helm OCI public (ghcr.io/kagent-dev).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: idp-preview
+  source:
+    repoURL: ghcr.io/kagent-dev/kagent/helm
+    chart: kagent-crds
+    targetRevision: 0.9.2
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

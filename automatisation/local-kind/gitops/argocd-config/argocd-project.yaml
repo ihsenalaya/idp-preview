@@ -1,0 +1,32 @@
+# AppProject de la plateforme IDP Preview — variante locale kind.
+# Identique a la prod, MOINS les depots Istio et le depot OCI prive
+# (preview-operator est deploye depuis le chart Git public + image kind load).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: idp-preview
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Plateforme IDP Preview locale (kind + GitHub Models)
+
+  sourceRepos:
+    - https://github.com/ihsenalaya/idp-preview        # manifests + apps + chart preview-operator (submodule clone)
+    - https://github.com/ihsenalaya/preview-operator   # chart Helm preview-operator (charts/preview-operator)
+    - https://charts.jetstack.io                       # cert-manager
+    - https://kubernetes.github.io/ingress-nginx       # ingress-nginx
+    - https://open-telemetry.github.io/opentelemetry-helm-charts  # otel-operator
+    - https://microcks.io/helm                         # microcks
+    - ghcr.io/kagent-dev/kagent/helm                   # kagent (OCI public)
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: '*'
+
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
