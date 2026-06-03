@@ -1,7 +1,11 @@
 # Microcks — mocking & tests de contrat d'API. Wave 0.
 #
-# Config locale minimale : Keycloak desactive (pas d'auth en local) et UI
-# exposee via ingress-nginx sur microcks.127.0.0.1.nip.io. Ajuster au besoin.
+# Keycloak ACTIVE : les scripts de contrat (/app/tests/microcks-import.py et
+# microcks.py) recuperent un token OAuth2 sur
+# microcks-keycloak.microcks.svc.cluster.local:8080/realms/microcks (valeur par
+# defaut injectee par l'operateur). Sans Keycloak ce service n'existe pas et les
+# tests echouent avec "Failed to resolve microcks-keycloak..." (DNS), comme
+# observe sur pr-47. UI exposee via ingress-nginx sur microcks.127.0.0.1.nip.io.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -25,7 +29,7 @@ spec:
             enabled: true
             className: nginx
         keycloak:
-          enabled: false
+          enabled: true
         features:
           async:
             enabled: false

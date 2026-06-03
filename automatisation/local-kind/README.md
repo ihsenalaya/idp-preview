@@ -237,26 +237,50 @@ kubectl logs -n preview-operator-system deploy/preview-operator-controller-manag
 
 ## 8. Limites connues du local
 
-- **Rate limits GitHub Models** : le tier gratuit est fortement limité
-  (requêtes/min + tokens/requête). Parfait pour la démo et le dev, pas pour de
-  la charge. Si l'enrichissement IA renvoie des `429`, l'opérateur réessaie
-  (backoff intégré) — patiente ou réduis la fréquence.
-- **kagent + baseUrl** : le ModelConfig `default-model-config` est généré par le
-  chart depuis `providers.openAI.config.baseUrl`. **Confirmé** avec le chart
-  0.9.2 : il rend bien `spec.openAI.baseUrl: https://models.github.ai/inference`.
-  Vérifier après déploiement :
+- **GitHub Models free tier — `413 Payload Too Large` sur les agents kagent.**
+  C'est *la* limite qui impacte la démo. Le free tier plafonne la **taille de
+  requête** (~8k tokens d'entrée). Les agents envoient des prompts volumineux
+  (test-strategist : diff + 20 ReconcileEvents ; troubleshooter : résultats +
+  logs + traces) → l'endpoint renvoie **`413`** → conséquences observées :
+    - **test-strategist** ne peut pas remplir le TestPlan → l'opérateur tombe en
+      **FullSuite (FallbackPolicy)**. La suite tourne quand même, mais sans la
+      *sélection IA* des tests.
+    - **troubleshooter** (analyse d'échec) renvoie `agent returned failed state`
+      → pas de commentaire d'analyse sur la PR.
+  Vérifier : `kubectl logs -n kagent-system deploy/preview-troubleshooter-agent | grep 413`.
+  **Ce n'est pas un bug** — c'est la limite du free tier. Mitigations : pointer
+  l'IA sur un endpoint à plus grand contexte (Azure OpenAI / GitHub Models payant)
+  via `gitops/apps/05-kagent.yaml` (`providers.openAI.config.baseUrl`) et le
+  secret correspondant ; ou réduire le contexte injecté. L'**enrichissement IA**
+  (seed + tests), lui, passe car ses prompts sont plus petits.
+- **Rate limits GitHub Models** (`429`) : en plus du 413, le débit est limité ;
+  l'opérateur réessaie (backoff intégré) pour l'enrichissement.
+- **kagent baseUrl** : ModelConfig `default-model-config` rendu par le chart depuis
+  `providers.openAI.config.baseUrl`. Vérifier :
   ```bash
   kubectl get modelconfig default-model-config -n kagent-system \
     -o jsonpath='{.spec.openAI.baseUrl}{"\n"}'
   ```
-- **github-runner** : s'enregistre comme runner self-hosted, mais ses jobs CI
-  (build/push d'images vers GHCR) supposent un accès GitHub réel. Pour tester
-  l'opérateur isolément, crée des `Preview` à la main (§5).
-- **microcks** : déployé avec une config locale minimale (Keycloak désactivé) ;
-  ajuster `gitops/apps/04-microcks.yaml` selon les besoins.
-- **Ressources** : la pile complète (cert-manager, ingress, otel, microcks,
-  kagent, opérateur, jaeger, runner) demande un Docker généreux — prévoir
-  ~8 Go de RAM et 4 vCPU minimum alloués à Docker.
+- **microcks + Keycloak** : Keycloak est **activé** (`gitops/apps/04-microcks.yaml`,
+  `keycloak.enabled: true`) car les scripts de contrat font une auth OAuth2 sur
+  `microcks-keycloak.microcks.svc:8080`. Sans lui : `Failed to resolve
+  microcks-keycloak...` et le suite `contract` échoue. (Ajoute ~1 pod Keycloak.)
+- **Job e2e — `activeDeadlineSeconds`** : le code opérateur récent borne chaque
+  Job de test à 300 s (`internal/controller/tests.go`). Si un Job e2e tourne
+  indéfiniment, c'est que l'**image opérateur déployée est antérieure** à ce
+  correctif → utiliser une image `> 1.1.0` (mettre à jour le tag dans
+  `gitops/apps/06-preview-operator.yaml`).
+- **`Failed` transitoire pendant le provisioning** : sous contention de reconcile,
+  l'opérateur peut flipper brièvement `phase=Failed` avant de revenir à `Running`
+  ; l'étape CI « Wait for ready » le voit et rend le run rouge alors que l'env est
+  sain. Côté **code opérateur** (`preview_controller.go`, `setFailedStatus`),
+  partiellement adressé en 1.1.0 (requeue au lieu de Failed sur conflit DB).
+- **github-runner** : enregistré comme runner self-hosted ; ses jobs CI build/push
+  vers GHCR supposent un accès GitHub réel. Pour tester l'opérateur isolément,
+  crée des `Preview` à la main (§5) ou via `workflow_dispatch`.
+- **Ressources** : la pile complète (cert-manager, ingress, otel, microcks +
+  Keycloak, kagent, opérateur, extension, jaeger, runner) demande un Docker
+  généreux — prévoir **~10 Go de RAM et 4 vCPU** minimum alloués à Docker.
 
 ---
 
