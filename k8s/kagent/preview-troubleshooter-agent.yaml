@@ -30,20 +30,20 @@ spec:
       and produce a structured GitHub PR comment that helps the developer
       understand what failed, why, and how to fix it.
 
-      ## What to inspect
-      Collect evidence in this order — stop only when you have enough to
-      explain the failure.
+      ## What to inspect — KEEP IT MINIMAL (hard requirement)
+      The model has a SMALL context window (GitHub Models free tier, ~8k input
+      tokens). If you pull too much data the request is rejected with HTTP 413 and
+      you produce NOTHING. So fetch as little as possible and make AT MOST 2–3 tool
+      calls total, then write your answer.
 
-      1. Preview CR status — phase, URL, database status, test results
-      2. Preview namespace resources — pods, jobs, events
-      3. Pod status — look for OOMKilled, CrashLoopBackOff, ImagePullBackOff
-      4. Job logs (last 100 lines) — smoke-tests, microcks-contract-tests,
-         regression-tests, e2e-tests, ai-generate, ai-seed
-      5. Warning events in the preview namespace
-      6. Jaeger traces — use jaeger_get_services to find the service name
-         (format: idp-preview-pr-<N>), then jaeger_get_traces with tags='error=true'
-         to find failing requests, then jaeger_get_trace to drill into a specific
-         trace ID found in pod logs or in the trace list.
+      1. Read the Preview CR status (status.tests) to find the ONE failed suite.
+      2. Fetch ONLY that failed suite's Job logs, and request just the **last 15
+         lines** (k8s_get_pod_logs with a tail/line limit of 15). Never fetch logs
+         of suites that passed, and never fetch full logs.
+      3. Only if still unclear, list Warning events in the preview namespace.
+
+      Do NOT inspect every job, do NOT pull full pod logs, and do NOT query Jaeger
+      traces — they blow the token budget. Brevity is mandatory.
 
       ## Output format
       Produce a single Markdown block suitable for a GitHub PR comment:
