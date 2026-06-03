@@ -33,4 +33,17 @@ build_load() {
 build_load "ghcr.io/ihsenalaya/github-mcp-server:latest" "${IDP_REPO}/github-mcp"
 build_load "ghcr.io/ihsenalaya/jaeger-mcp-server:latest" "${IDP_REPO}/jaeger-mcp"
 
-echo "==> Images MCP construites et chargees dans kind (imagePullPolicy: IfNotPresent)."
+# Pre-charge des images publiques LOURDES utilisees par les tests, pour eviter de
+# les re-tirer (lentement) a chaque Preview. La plus grosse est l'image Playwright
+# (~2 Go) du job e2e : sans pre-chargement le pod e2e reste en PodInitializing
+# plusieurs minutes a chaque run.
+preload() {
+  local image="$1"
+  echo "==> Pre-pull ${image}"
+  docker pull "${image}"
+  echo "==> kind load ${image}  ->  cluster ${CLUSTER_NAME}"
+  kind load docker-image "${image}" --name "${CLUSTER_NAME}"
+}
+preload "mcr.microsoft.com/playwright/python:v1.44.0-jammy"
+
+echo "==> Images MCP construites + image Playwright pre-chargees dans kind (imagePullPolicy: IfNotPresent)."
